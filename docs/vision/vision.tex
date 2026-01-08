@@ -18,8 +18,15 @@
 
 The primary objective is to leverage self-supervised learning (SSL) to the fullest extent possible, moving away from purely supervised classification paradigms. The system is designed to handle arbitrarily long audio recordings while maintaining consistent speaker identity prediction through a pseudo-online learning approach.
 
+\section{Motivation: Limitations of Prior Art}
+Current state-of-the-art methods, such as EEND-EDA \cite{horiguchi2022endtoend}, have demonstrated impressive capabilities in handling overlapping speech and flexible speaker counts. However, they rely heavily on global attention mechanisms to maintain speaker consistency. EEND-EDA employs a two-phase approach: first generating speaker "attractors" by attending to the entire audio sequence, and subsequently assigning speech activity to these attractors.
+
+This global dependency presents a critical limitation: it necessitates processing the entire audio file in a single pass to ensure speaker consistency. For long-form audio where the full context cannot fit into memory, the process must be split into chunks, breaking the global speaker identity tracking (e.g., "Speaker 1" in chunk A may be "Speaker 3" in chunk B).
+
 \section{Architecture}
- The proposed architecture consists of two primary stages: a robust self-supervised frontend and an energy-based downstream network.
+Our goal is to overcome these limitations by introducing a \textit{pseudo-online} process that operates on energy "basins" of attraction. In this framework, speakers are dynamically added to an energy landscape as they are discovered. We then utilize an energy minimization technique to fit audio samples to these speaker basins, preserving identity consistency without requiring global attention over the entire duration.
+
+The proposed architecture consists of two primary stages: a robust self-supervised frontend and an energy-based downstream network.
 
 \subsection{Stage 1: Self-Supervised Frontend (WavJEPA)}
  The first stage involves a high-capacity encoder responsible for building rich, contextualized representations of human speech. 
