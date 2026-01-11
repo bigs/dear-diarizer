@@ -20,3 +20,7 @@ wheels/
 *.fls
 *.synctex.gz
 docs/vision/vision.pdf
+
+# Local data
+downloads/
+podcasts.db
