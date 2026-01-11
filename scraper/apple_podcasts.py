@@ -1,5 +1,7 @@
+from typing import Dict, List, Optional
+
 import httpx
-from typing import List, Dict, Optional
+
 
 class ApplePodcastsAPI:
     def __init__(self, country: str = "us"):
@@ -32,10 +34,12 @@ class ApplePodcastsAPI:
         for pid in ids:
             meta = self.get_podcast_metadata(pid)
             if meta and meta.get("feedUrl"):
-                podcasts.append({
-                    "id": pid,
-                    "name": meta.get("collectionName"),
-                    "rss_url": meta.get("feedUrl"),
-                    "artist": meta.get("artistName"),
-                })
+                podcasts.append(
+                    {
+                        "id": pid,
+                        "name": meta.get("collectionName"),
+                        "rss_url": meta.get("feedUrl"),
+                        "artist": meta.get("artistName"),
+                    }
+                )
         return podcasts
