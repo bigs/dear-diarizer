@@ -149,19 +149,20 @@ class WaveformEncoder(eqx.Module):
         x = x[:, jnp.newaxis, :]
 
         # Apply conv blocks (vmapped over batch)
+        # The for-loop is unrolled at trace time, vmap handles batching
         def apply_blocks(x_single):
             for block in self.conv_blocks:
                 x_single = block(x_single)
             return x_single
 
-        # x is (batch, 1, time), each x_single is (1, time)
         x = jax.vmap(apply_blocks)(x)  # (batch, 512, frames)
 
         # Transpose to (batch, frames, 512) for linear projection
         x = jnp.transpose(x, (0, 2, 1))
 
-        # Project to embed_dim
-        x = jax.vmap(jax.vmap(self.proj))(x)  # (batch, frames, embed_dim)
+        # Project to embed_dim via matrix multiply (avoids nested vmap)
+        assert self.proj.bias is not None  # Linear created with use_bias=True (default)
+        x = x @ self.proj.weight.T + self.proj.bias  # (batch, frames, embed_dim)
 
         if squeeze_batch:
             x = x[0]  # Remove batch dim
