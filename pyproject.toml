@@ -9,5 +9,19 @@ dependencies = [
     "feedparser>=6.0.12",
     "httpx>=0.28.1",
     "jax>=0.8.2",
+    "jaxtyping>=0.3.5",
+    "librosa>=0.11.0",
     "tqdm>=4.67.1",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.408",
+    "ruff>=0.14.11",
+]
+
+[tool.ruff.lint]
+ignore = [
+    "F722",  # jaxtyping uses strings in annotations like Float[Array, "batch time"]
+    "F821",  # jaxtyping dimension names appear as undefined (e.g., "time")
 ]
