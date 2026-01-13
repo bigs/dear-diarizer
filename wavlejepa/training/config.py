@@ -1,0 +1,116 @@
+"""
+Training configuration for WavLeJEPA.
+
+Frozen dataclasses for all training hyperparameters.
+"""
+
+from dataclasses import dataclass, field, asdict
+from typing import Optional
+import json
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class OptimizerConfig:
+    """Optimizer hyperparameters following WavJEPA spec."""
+
+    peak_lr: float = 2e-4
+    warmup_steps: int = 100_000
+    total_steps: int = 375_000
+    weight_decay: float = 0.04
+    grad_clip_norm: float = 1.0
+    beta1: float = 0.9
+    beta2: float = 0.999
+    eps: float = 1e-8
+
+
+@dataclass(frozen=True)
+class LossConfig:
+    """Loss function weights."""
+
+    sigreg_weight: float = 0.02
+    num_slices: int = 256
+
+
+@dataclass(frozen=True)
+class CheckpointConfig:
+    """Checkpointing configuration."""
+
+    checkpoint_dir: str = "./checkpoints"
+    save_every_n_steps: int = 5000
+    keep_n_checkpoints: int = 5
+    save_best: bool = True
+
+
+@dataclass(frozen=True)
+class LoggingConfig:
+    """Wandb logging configuration."""
+
+    project: str = "wavlejepa"
+    entity: Optional[str] = None
+    log_every_n_steps: int = 100
+    eval_every_n_steps: int = 1000
+
+
+@dataclass(frozen=True)
+class DataConfig:
+    """Data pipeline configuration."""
+
+    batch_size: int = 32  # per-device batch size
+    crop_duration: float = 2.0  # seconds
+    sample_rate: int = 16000
+    num_workers: int = 4
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    """Complete training configuration."""
+
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    loss: LossConfig = field(default_factory=LossConfig)
+    checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
+    data: DataConfig = field(default_factory=DataConfig)
+
+    seed: int = 42
+
+    def to_dict(self) -> dict:
+        """Convert to dict for wandb config tracking."""
+        return asdict(self)
+
+    def save(self, path: str | Path) -> None:
+        """Save config to JSON file."""
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "TrainingConfig":
+        """Load from YAML file."""
+        import yaml
+
+        with open(path) as f:
+            data = yaml.safe_load(f)
+
+        return cls(
+            optimizer=OptimizerConfig(**data.get("optimizer", {})),
+            loss=LossConfig(**data.get("loss", {})),
+            checkpoint=CheckpointConfig(**data.get("checkpoint", {})),
+            logging=LoggingConfig(**data.get("logging", {})),
+            data=DataConfig(**data.get("data", {})),
+            seed=data.get("seed", 42),
+        )
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "TrainingConfig":
+        """Load from JSON file."""
+        with open(path) as f:
+            data = json.load(f)
+
+        return cls(
+            optimizer=OptimizerConfig(**data.get("optimizer", {})),
+            loss=LossConfig(**data.get("loss", {})),
+            checkpoint=CheckpointConfig(**data.get("checkpoint", {})),
+            logging=LoggingConfig(**data.get("logging", {})),
+            data=DataConfig(**data.get("data", {})),
+            seed=data.get("seed", 42),
+        )

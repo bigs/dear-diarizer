@@ -250,18 +250,23 @@ class WavLeJEPA(eqx.Module):
         """
         Training forward pass.
 
+        JIT-compatible: uses fixed-size arrays with validity counts instead
+        of dynamic boolean indexing.
+
         Args:
             waveform: Raw audio waveform [T] at 16kHz
             key: PRNG key
 
         Returns:
             Dictionary containing:
-            - predictions: Predicted target representations [target_len, 768]
-            - targets: Actual target representations [target_len, 768]
-            - projected_context: Projected context for SIGReg [context_len, 256]
-            - projected_predictions: Projected predictions for SIGReg [target_len, 256]
+            - predictions: Predicted target representations [max_seq_len, 768]
+            - targets: Actual target representations [max_seq_len, 768]
+            - projected_context: Projected context for SIGReg [max_seq_len, 256]
+            - projected_predictions: Projected predictions for SIGReg [max_seq_len, 256]
             - context_mask: Boolean context mask [seq_len]
             - target_mask: Boolean target mask [seq_len]
+            - num_context: Number of valid context positions
+            - num_targets: Number of valid target positions
         """
         key1, key2, key3, key4, key5 = jax.random.split(key, 5)
 
@@ -275,12 +280,15 @@ class WavLeJEPA(eqx.Module):
             seq_len, context_mask, self.config.masking, key3
         )
 
-        # 3. Get position indices
-        context_positions = jnp.where(context_mask, size=seq_len, fill_value=-1)[0]
-        context_positions = context_positions[context_positions >= 0]
+        # 3. Get position indices (fixed size, padded with seq_len for invalid)
+        # Use seq_len as fill value so invalid indices point to a valid position
+        # (we'll use counts to ignore them in loss computation)
+        context_positions, num_context = mask_to_indices(context_mask, seq_len)
+        target_positions, num_targets = mask_to_indices(target_mask, seq_len)
 
-        target_positions = jnp.where(target_mask, size=seq_len, fill_value=-1)[0]
-        target_positions = target_positions[target_positions >= 0]
+        # Replace -1 padding with 0 (a valid index) - we use counts to mask later
+        context_positions = jnp.where(context_positions >= 0, context_positions, 0)
+        target_positions = jnp.where(target_positions >= 0, target_positions, 0)
 
         # 4. Encode with context masking (all positions, but attention restricted)
         context_output = self.context_encoder.forward_with_top_k(
@@ -289,7 +297,8 @@ class WavLeJEPA(eqx.Module):
             key=key4,
             inference=False,
         )
-        context_at_positions = context_output[context_positions]  # [context_len, 768]
+        # Gather context at positions (fixed size array)
+        context_at_positions = context_output[context_positions]  # [seq_len, 768]
 
         # 5. Get target representations (encode full sequence without masking)
         full_output = self.context_encoder.forward_with_top_k(
@@ -298,7 +307,7 @@ class WavLeJEPA(eqx.Module):
             key=key5,
             inference=False,
         )
-        targets = full_output[target_positions]  # [target_len, 768]
+        targets = full_output[target_positions]  # [seq_len, 768]
 
         # 6. Predict targets from context
         predictions = self.predictor(
@@ -306,11 +315,11 @@ class WavLeJEPA(eqx.Module):
             context_positions=context_positions,
             target_positions=target_positions,
             inference=False,
-        )  # [target_len, 768]
+        )  # [seq_len, 768]
 
         # 7. Project for SIGReg
-        projected_context = self.projector(context_at_positions)  # [context_len, 256]
-        projected_predictions = self.projector(predictions)  # [target_len, 256]
+        projected_context = self.projector(context_at_positions)  # [seq_len, 256]
+        projected_predictions = self.projector(predictions)  # [seq_len, 256]
 
         return {
             "predictions": predictions,
@@ -319,6 +328,8 @@ class WavLeJEPA(eqx.Module):
             "projected_predictions": projected_predictions,
             "context_mask": context_mask,
             "target_mask": target_mask,
+            "num_context": num_context,
+            "num_targets": num_targets,
         }
 
     def extract_features(

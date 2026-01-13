@@ -21,10 +21,12 @@ from .model import (
     sample_target_mask,
 )
 from .losses import (
-    invariance_loss,
-    sigreg_loss,
+    masked_invariance_loss,
+    masked_sigreg_loss,
     compute_loss,
 )
+from . import training
+from . import data
 
 __all__ = [
     # SIGReg
@@ -50,7 +52,11 @@ __all__ = [
     "sample_context_mask",
     "sample_target_mask",
     # Losses
-    "invariance_loss",
-    "sigreg_loss",
+    "masked_invariance_loss",
+    "masked_sigreg_loss",
     "compute_loss",
+    # Training
+    "training",
+    # Data
+    "data",
 ]
