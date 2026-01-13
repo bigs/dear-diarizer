@@ -24,3 +24,6 @@ docs/vision/vision.pdf
 # Local data
 downloads/
 podcasts.db
+shards/
+checkpoints/
+wandb/
