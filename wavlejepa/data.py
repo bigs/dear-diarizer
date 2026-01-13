@@ -5,6 +5,9 @@ Uses WebDataset to stream audio from object storage (S3/GCS/local).
 """
 
 import io
+import os
+import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Callable
 
@@ -16,6 +19,20 @@ import webdataset as wds
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from .waveform_encoder import TARGET_SR
+
+
+@contextmanager
+def suppress_stderr():
+    """Suppress stderr (for noisy libmpg123 warnings)."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stderr = os.dup(2)
+    os.dup2(devnull, 2)
+    try:
+        yield
+    finally:
+        os.dup2(old_stderr, 2)
+        os.close(devnull)
+        os.close(old_stderr)
 
 
 @dataclass
@@ -55,11 +72,13 @@ def load_audio_from_bytes(
         Numpy array of shape (time,) with audio samples
     """
     # librosa can load from file-like objects
-    audio, _ = librosa.load(
-        io.BytesIO(audio_bytes),
-        sr=sample_rate,
-        mono=True,
-    )
+    # suppress_stderr silences noisy libmpg123 warnings
+    with suppress_stderr():
+        audio, _ = librosa.load(
+            io.BytesIO(audio_bytes),
+            sr=sample_rate,
+            mono=True,
+        )
 
     if normalize:
         audio = audio - np.mean(audio)
