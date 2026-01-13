@@ -24,6 +24,9 @@ dev = [
     "pyright>=1.1.408",
     "ruff>=0.14.11",
 ]
+cuda = [
+    "jax[cuda12]>=0.8.2",
+]
 
 [tool.ruff.lint]
 ignore = [
