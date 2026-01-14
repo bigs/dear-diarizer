@@ -23,7 +23,7 @@ data:
   crop_duration: 2.0
 
 checkpoint:
-  checkpoint_dir: checkpoints
+  checkpoint_dir: checkpoints-batch128-conservative
   save_every_n_steps: 2500
   keep_n_checkpoints: 3
 
