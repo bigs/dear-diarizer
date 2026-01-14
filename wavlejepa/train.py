@@ -20,6 +20,7 @@ Supports:
 """
 
 import argparse
+import signal
 from typing import Optional
 
 import jax
@@ -40,6 +41,32 @@ from .training import (
     WandBLogger,
     NoOpLogger,
 )
+
+
+class GracefulShutdown:
+    """Handles graceful shutdown on SIGINT."""
+
+    def __init__(self):
+        self.shutdown_requested = False
+        self._original_handler = None
+
+    def request_shutdown(self, _signum, _frame):
+        """Signal handler that requests graceful shutdown."""
+        if self.shutdown_requested:
+            # Second SIGINT - force exit
+            tqdm.write("\nForced exit requested, terminating immediately...")
+            raise KeyboardInterrupt
+        self.shutdown_requested = True
+        tqdm.write("\nShutdown requested, finishing current step...")
+
+    def install(self):
+        """Install the signal handler."""
+        self._original_handler = signal.signal(signal.SIGINT, self.request_shutdown)
+
+    def uninstall(self):
+        """Restore original signal handler."""
+        if self._original_handler is not None:
+            signal.signal(signal.SIGINT, self._original_handler)
 
 
 def create_dummy_batch(
@@ -157,8 +184,18 @@ def main(
 
     eval_key = jax.random.key(config.seed + 1)
 
+    # Set up graceful shutdown handler
+    shutdown = GracefulShutdown()
+    shutdown.install()
+
+    interrupted = False
     try:
         for step in pbar:
+            # Check for graceful shutdown request
+            if shutdown.shutdown_requested:
+                interrupted = True
+                break
+
             # Get batch
             if data_loader is not None:
                 batch = next(data_loader)
@@ -202,17 +239,39 @@ def main(
             # Checkpointing
             if step % config.checkpoint.save_every_n_steps == 0 and step > 0:
                 checkpointer.save(state, metrics)
-                print(f"\nCheckpoint saved at step {step}")
+                tqdm.write(f"Checkpoint saved at step {step}")
+
+            # Check again after step completes (in case signal arrived during step)
+            if shutdown.shutdown_requested:
+                interrupted = True
+                break
 
     except KeyboardInterrupt:
-        print("\nTraining interrupted")
+        # Second Ctrl+C during graceful shutdown triggers immediate exit
+        interrupted = True
+        tqdm.write("Training interrupted")
 
-    # Final save
+    finally:
+        shutdown.uninstall()
+
+    # Finalization
+    pbar.close()
+
+    if interrupted:
+        tqdm.write("Saving checkpoint before exit...")
+
     checkpointer.save(state)
+    tqdm.write("Waiting for checkpoint save to complete...")
     checkpointer.wait_until_finished()
+    tqdm.write("Checkpoint saved.")
+
+    tqdm.write("Finalizing wandb run...")
     logger.finish()
 
-    print("Training complete!")
+    if interrupted:
+        tqdm.write("Training interrupted at step {}.".format(int(state.step)))
+    else:
+        tqdm.write("Training complete!")
 
 
 if __name__ == "__main__":
