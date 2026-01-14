@@ -4,7 +4,6 @@ Data pipeline for WavLeJEPA training.
 Uses WebDataset to stream audio from object storage (S3/GCS/local).
 """
 
-import gc
 import io
 import os
 import sys
@@ -145,16 +144,13 @@ def create_dataset(
             raise ValueError(f"No audio file found in sample: {list(sample.keys())}. Expected one of {audio_extensions}")
 
         # Load and process audio
-        full_audio = load_audio_from_bytes(
+        audio = load_audio_from_bytes(
             sample[audio_key],
             sample_rate=config.sample_rate,
         )
 
-        # Random crop and free full audio immediately
-        audio = random_crop_np(full_audio, crop_samples, rng)
-        del full_audio
-        del sample[audio_key]  # Free the compressed bytes too
-        gc.collect()
+        # Random crop
+        audio = random_crop_np(audio, crop_samples, rng)
 
         return {"audio": audio, "__key__": sample.get("__key__", "")}
 
