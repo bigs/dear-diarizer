@@ -43,7 +43,7 @@ class WavLeJEPACheckpointer:
         self.config = config
         self.training_config = training_config
         self.model_config = model_config
-        self.checkpoint_dir = Path(config.checkpoint_dir)
+        self.checkpoint_dir = Path(config.checkpoint_dir).resolve()
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         # Save configs for reconstruction on restore
