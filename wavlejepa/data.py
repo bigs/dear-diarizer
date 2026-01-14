@@ -131,7 +131,14 @@ def create_dataset(
 
     def process_sample(sample: dict) -> dict:
         """Process a single sample from the tar."""
-        # Find audio key (could be mp3, wav, flac, etc. - no leading dot in webdataset keys)
+        # Check for pre-decoded tensor first (fast path)
+        if "npy" in sample:
+            audio = np.load(io.BytesIO(sample["npy"]))
+            # Still need random crop since chunks are typically 30s
+            audio = random_crop_np(audio, crop_samples, rng)
+            return {"audio": audio, "__key__": sample.get("__key__", "")}
+
+        # Fall back to MP3/audio decoding (backward compatible)
         audio_extensions = ("mp3", "wav", "flac", "ogg", "m4a", "opus", "webm")
         audio_key = None
         for key in sample:
@@ -141,7 +148,7 @@ def create_dataset(
                 break
 
         if audio_key is None:
-            raise ValueError(f"No audio file found in sample: {list(sample.keys())}. Expected one of {audio_extensions}")
+            raise ValueError(f"No audio file found in sample: {list(sample.keys())}. Expected one of {audio_extensions} or 'npy'")
 
         # Load and process audio
         audio = load_audio_from_bytes(
