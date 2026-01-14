@@ -27,6 +27,9 @@ dev = [
 cuda = [
     "jax[cuda12]>=0.8.2",
 ]
+tpu = [
+    "jax[tpu]>=0.8.2",
+]
 
 [tool.ruff.lint]
 ignore = [
