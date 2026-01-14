@@ -112,7 +112,7 @@ def process_file(
 
         return results
     except Exception as e:
-        print(f"Warning: Failed to process {path}: {e}", file=sys.stderr)
+        tqdm.write(f"Warning: Failed to process {path}: {e}")
         return []
 
 
@@ -192,7 +192,7 @@ def main():
 
     # Validate input
     if not args.input.is_dir():
-        print(f"Error: Input directory does not exist: {args.input}", file=sys.stderr)
+        tqdm.write(f"Error: Input directory does not exist: {args.input}")
         sys.exit(1)
 
     # Create output directory
@@ -201,23 +201,23 @@ def main():
     # Find audio files
     audio_files = find_audio_files(args.input, tuple(args.extensions))
     if not audio_files:
-        print(f"Error: No audio files found in {args.input}", file=sys.stderr)
+        tqdm.write(f"Error: No audio files found in {args.input}")
         sys.exit(1)
 
-    print(f"Found {len(audio_files)} audio files")
+    tqdm.write(f"Found {len(audio_files)} audio files")
 
     # Calculate chunk sizes
     chunk_samples = int(args.chunk_duration * args.sample_rate)
     min_chunk_samples = int(args.min_chunk_duration * args.sample_rate)
     dtype = np.float16 if args.dtype == "float16" else np.float32
 
-    print(f"Chunk size: {chunk_samples} samples ({args.chunk_duration}s)")
-    print(f"Min chunk size: {min_chunk_samples} samples ({args.min_chunk_duration}s)")
-    print(f"Output dtype: {dtype}")
+    tqdm.write(f"Chunk size: {chunk_samples} samples ({args.chunk_duration}s)")
+    tqdm.write(f"Min chunk size: {min_chunk_samples} samples ({args.min_chunk_duration}s)")
+    tqdm.write(f"Output dtype: {dtype}")
 
     # Set up worker pool
     num_workers = args.workers or max(1, cpu_count() - 1)
-    print(f"Using {num_workers} workers")
+    tqdm.write(f"Using {num_workers} workers")
 
     # Create process function with fixed args
     process_fn = partial(
@@ -251,9 +251,9 @@ def main():
                     total_chunks += 1
                     total_bytes += len(npy_bytes)
 
-    print(f"\nDone!")
-    print(f"Total chunks: {total_chunks}")
-    print(f"Total size: {total_bytes / 1e9:.2f} GB")
+    tqdm.write(f"\nDone!")
+    tqdm.write(f"Total chunks: {total_chunks}")
+    tqdm.write(f"Total size: {total_bytes / 1e9:.2f} GB")
 
 
 if __name__ == "__main__":
