@@ -16,6 +16,7 @@ from .config import (
     CheckpointConfig,
     LoggingConfig,
     DataConfig,
+    PrecisionConfig,
 )
 from .state import TrainState, create_train_state, create_optimizer, get_lr_at_step
 from .step import (
@@ -36,6 +37,7 @@ __all__ = [
     "CheckpointConfig",
     "LoggingConfig",
     "DataConfig",
+    "PrecisionConfig",
     # State
     "TrainState",
     "create_train_state",

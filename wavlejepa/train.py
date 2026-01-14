@@ -134,9 +134,12 @@ def main(
     # Shard state across devices
     state = shard_state(state, sharding)
 
-    # Create training step
-    train_step_fn = make_train_step(optimizer, config.loss, sharding)
-    eval_step_fn = make_eval_step(config.loss, sharding)
+    # Create training step with mixed precision
+    train_step_fn = make_train_step(
+        optimizer, config.loss, sharding, config.precision
+    )
+    eval_step_fn = make_eval_step(config.loss, sharding, config.precision)
+    print(f"Compute dtype: {config.precision.compute_dtype}")
 
     # Initialize logger
     if use_wandb:

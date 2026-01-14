@@ -2,6 +2,7 @@
 Training and evaluation step functions for WavLeJEPA.
 
 Supports both single-GPU and multi-GPU data parallelism.
+Includes mixed precision (bfloat16) support for H100/GB10.
 """
 
 from typing import Optional
@@ -15,7 +16,8 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from ..losses import compute_loss
 from .state import TrainState
-from .config import LossConfig
+from .config import LossConfig, PrecisionConfig
+from .precision import get_compute_dtype, cast_to_float32, cast_model_to_compute
 
 
 # Type alias for sharding configuration
@@ -64,6 +66,7 @@ def make_train_step(
     optimizer: optax.GradientTransformation,
     loss_config: LossConfig,
     sharding: ShardingConfig = None,
+    precision_config: Optional[PrecisionConfig] = None,
 ):
     """
     Create a JIT-compiled training step function.
@@ -72,10 +75,16 @@ def make_train_step(
         optimizer: Optax optimizer
         loss_config: Loss configuration
         sharding: Sharding config from init_sharding() (None for single GPU)
+        precision_config: Mixed precision config (None defaults to bfloat16)
 
     Returns:
         train_step function: (state, batch) -> (new_state, metrics)
     """
+    if precision_config is None:
+        precision_config = PrecisionConfig()
+
+    compute_dtype = get_compute_dtype(precision_config)
+    loss_in_fp32 = precision_config.loss_in_float32
 
     @eqx.filter_jit(donate="all")
     def train_step(
@@ -98,6 +107,9 @@ def make_train_step(
             state = eqx.filter_shard(state, model_sharding)
             batch = eqx.filter_shard(batch, data_sharding)
 
+        # Cast to compute dtype for mixed precision
+        batch = batch.astype(compute_dtype)
+
         # Split PRNG key for this step
         key, loss_key, forward_key = jax.random.split(state.key, 3)
 
@@ -107,12 +119,21 @@ def make_train_step(
 
         def loss_fn(model):
             """Compute loss over batch with vmap."""
+            # Cast model to compute dtype for mixed precision forward pass
+            model_compute = cast_model_to_compute(model, compute_dtype)
 
             def single_forward(waveform, k):
-                return model.forward_train(waveform, key=k)
+                return model_compute.forward_train(waveform, key=k)
 
             # vmap forward_train over batch dimension
             outputs = jax.vmap(single_forward)(batch, forward_keys)
+
+            # Cast outputs to float32 for stable loss computation
+            if loss_in_fp32:
+                outputs = jax.tree.map(
+                    lambda x: cast_to_float32(x) if x.dtype == compute_dtype else x,
+                    outputs,
+                )
 
             # Compute loss
             # outputs has shape [batch, ...] for each field
@@ -162,6 +183,7 @@ def make_train_step(
 def make_eval_step(
     loss_config: LossConfig,
     sharding: ShardingConfig = None,
+    precision_config: Optional[PrecisionConfig] = None,
 ):
     """
     Create a JIT-compiled evaluation step function.
@@ -169,10 +191,16 @@ def make_eval_step(
     Args:
         loss_config: Loss configuration
         sharding: Sharding config from init_sharding() (None for single GPU)
+        precision_config: Mixed precision config (None defaults to bfloat16)
 
     Returns:
         eval_step function: (state, batch) -> metrics
     """
+    if precision_config is None:
+        precision_config = PrecisionConfig()
+
+    compute_dtype = get_compute_dtype(precision_config)
+    loss_in_fp32 = precision_config.loss_in_float32
 
     @eqx.filter_jit
     def eval_step(
@@ -197,14 +225,28 @@ def make_eval_step(
             state = eqx.filter_shard(state, model_sharding)
             batch = eqx.filter_shard(batch, data_sharding)
 
+        # Cast to compute dtype for mixed precision
+        batch = batch.astype(compute_dtype)
+
         loss_key, forward_key = jax.random.split(key)
         batch_size = batch.shape[0]
         forward_keys = jax.random.split(forward_key, batch_size)
 
+        # Cast model to compute dtype for mixed precision forward pass
+        model_compute = cast_model_to_compute(state.model, compute_dtype)
+
         def single_forward(waveform, k):
-            return state.model.forward_train(waveform, key=k)
+            return model_compute.forward_train(waveform, key=k)
 
         outputs = jax.vmap(single_forward)(batch, forward_keys)
+
+        # Cast outputs to float32 for stable loss computation
+        if loss_in_fp32:
+            outputs = jax.tree.map(
+                lambda x: cast_to_float32(x) if x.dtype == compute_dtype else x,
+                outputs,
+            )
+
         _, metrics = compute_loss(
             outputs,
             loss_key,

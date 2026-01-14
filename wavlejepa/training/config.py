@@ -63,6 +63,22 @@ class DataConfig:
 
 
 @dataclass(frozen=True)
+class PrecisionConfig:
+    """Mixed precision configuration.
+
+    For H100/GB10 (Blackwell), bfloat16 gives ~2x throughput with same
+    dynamic range as float32. Master weights stay in float32 automatically.
+    """
+
+    # Compute dtype for forward/backward pass activations
+    # Options: "float32", "bfloat16", "float16"
+    compute_dtype: str = "bfloat16"
+
+    # Whether to keep loss computation in float32 (recommended for stability)
+    loss_in_float32: bool = True
+
+
+@dataclass(frozen=True)
 class TrainingConfig:
     """Complete training configuration."""
 
@@ -71,6 +87,7 @@ class TrainingConfig:
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    precision: PrecisionConfig = field(default_factory=PrecisionConfig)
 
     seed: int = 42
 
@@ -97,6 +114,7 @@ class TrainingConfig:
             checkpoint=CheckpointConfig(**data.get("checkpoint", {})),
             logging=LoggingConfig(**data.get("logging", {})),
             data=DataConfig(**data.get("data", {})),
+            precision=PrecisionConfig(**data.get("precision", {})),
             seed=data.get("seed", 42),
         )
 
@@ -112,5 +130,6 @@ class TrainingConfig:
             checkpoint=CheckpointConfig(**data.get("checkpoint", {})),
             logging=LoggingConfig(**data.get("logging", {})),
             data=DataConfig(**data.get("data", {})),
+            precision=PrecisionConfig(**data.get("precision", {})),
             seed=data.get("seed", 42),
         )
