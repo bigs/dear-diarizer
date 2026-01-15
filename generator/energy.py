@@ -37,7 +37,7 @@ def compute_distances(
 
 def soft_assignment(
     distances: Float[Array, "num_frames num_attractors"],
-    tau: float,
+    tau: float | Float[Array, ""],
     attractor_mask: Float[Array, " num_attractors"] | None = None,
 ) -> Float[Array, "num_frames num_attractors"]:
     """Compute soft assignment weights using softmin.
@@ -64,7 +64,7 @@ def soft_assignment(
 def energy_assignment(
     frames: Float[Array, "num_frames dim"],
     attractors: Float[Array, "num_attractors dim"],
-    tau: float,
+    tau: float | Float[Array, ""],
     attractor_mask: Float[Array, " num_attractors"] | None = None,
 ) -> Float[Array, ""]:
     """Frame-to-attractor assignment energy.
@@ -138,7 +138,7 @@ def energy_separation(
 def energy_coverage(
     frames: Float[Array, "num_frames dim"],
     attractors: Float[Array, "num_attractors dim"],
-    tau: float,
+    tau: float | Float[Array, ""],
     min_usage: float,
     attractor_mask: Float[Array, " num_attractors"] | None = None,
 ) -> Float[Array, ""]:
@@ -179,7 +179,7 @@ def energy_coverage(
 def total_energy(
     frames: Float[Array, "num_frames dim"],
     attractors: Float[Array, "num_attractors dim"],
-    tau: float,
+    tau: float | Float[Array, ""],
     lambda_separation: float = 1.0,
     lambda_coverage: float = 0.1,
     separation_margin: float = 1.0,
@@ -213,7 +213,7 @@ def total_energy(
 def get_assignment_weights(
     frames: Float[Array, "num_frames dim"],
     attractors: Float[Array, "num_attractors dim"],
-    tau: float,
+    tau: float | Float[Array, ""],
     attractor_mask: Float[Array, " num_attractors"] | None = None,
 ) -> Float[Array, "num_frames num_attractors"]:
     """Get soft assignment weights (useful for confidence training).

@@ -15,7 +15,7 @@ def confidence_loss(
     confidences: Float[Array, " num_attractors"],
     frames: Float[Array, "num_frames dim"],
     attractors: Float[Array, "num_attractors dim"],
-    tau: float,
+    tau: float | Float[Array, ""],
     usage_threshold: float,
     attractor_mask: Float[Array, " num_attractors"] | None = None,
 ) -> Float[Array, ""]:

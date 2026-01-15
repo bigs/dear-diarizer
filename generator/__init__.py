@@ -28,6 +28,19 @@ from .synthetic import (
     make_overlapping_speakers,
 )
 from .refinement import refine_attractors, refine_attractors_with_trace
+from .ssd import ssd_stable, segsum_stable, safe_exp
+from .regularization import (
+    cardinality_loss,
+    temporal_spread_loss,
+    compute_regularization,
+)
+from .train import (
+    TrainConfig,
+    make_train_step,
+    create_optimizer,
+    init_training,
+    train_epoch,
+)
 
 __all__ = [
     # Config
@@ -57,4 +70,18 @@ __all__ = [
     # Refinement
     "refine_attractors",
     "refine_attractors_with_trace",
+    # Stable SSD
+    "ssd_stable",
+    "segsum_stable",
+    "safe_exp",
+    # Regularization
+    "cardinality_loss",
+    "temporal_spread_loss",
+    "compute_regularization",
+    # Training
+    "TrainConfig",
+    "make_train_step",
+    "create_optimizer",
+    "init_training",
+    "train_epoch",
 ]

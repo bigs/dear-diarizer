@@ -12,9 +12,8 @@ import equinox as eqx
 from jaxtyping import Array, Float, PRNGKeyArray
 from einops import rearrange
 
-from mamba2_jax.ssd import ssd_naive
-
 from .config import GeneratorConfig
+from .ssd import ssd_stable
 
 
 class RMSNorm(eqx.Module):
@@ -184,21 +183,21 @@ class Mamba2Layer(eqx.Module):
         if initial_state is not None:
             init_state = initial_state[None, None, ...]  # [1, 1, num_heads, head_dim, state_size]
 
-        # Run SSD
+        # Run SSD (using our stable implementation)
         A = -jnp.exp(self.A_log.astype(jnp.float32))
-        y, final_state = ssd_naive(
+        y, final_state = ssd_stable(
             x=x_ssd,
             dt=dt_batched,
             A=A,
-            B_mat=B_ssd,
-            C_mat=C_ssd,
+            B=B_ssd,
+            C=C_ssd,
             chunk_size=cfg.chunk_size,
             D=self.D,
             dt_bias=self.dt_bias,
             dt_min=cfg.time_step_limit[0],
             dt_max=cfg.time_step_limit[1],
             initial_states=init_state,
-            return_final_states=return_final_state,
+            return_final_state=return_final_state,
         )
 
         # Reshape output: [1, seq_len, num_heads, head_dim] -> [seq_len, intermediate_size]
@@ -287,7 +286,7 @@ class LinearAttentionStack(eqx.Module):
         Returns:
             Contextualized representations [seq_len, hidden_dim]
         """
-        # Optional input projection
+        # Optional input projection (ssd_stable handles padding internally)
         if self.input_proj is not None:
             x = jax.vmap(self.input_proj)(x)
 

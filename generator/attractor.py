@@ -176,6 +176,7 @@ class AttractorGenerator(eqx.Module):
     ) -> Tuple[
         Float[Array, "num_attractors attractor_dim"],
         Float[Array, " num_attractors"],
+        Float[Array, "num_frames hidden_dim"],
     ]:
         """Generate a fixed number of attractors (no early stopping).
 
@@ -188,6 +189,7 @@ class AttractorGenerator(eqx.Module):
         Returns:
             attractors: [num_attractors, attractor_dim]
             confidences: [num_attractors]
+            contextualized_frames: [N, hidden_dim] for energy computation
         """
         # Contextualize frames
         contextualized = self.linear_attn_stack(frame_embeddings)  # [N, hidden_dim]
@@ -218,4 +220,4 @@ class AttractorGenerator(eqx.Module):
             step_fn, init_carry, None, length=num_attractors
         )
 
-        return attractors, confidences
+        return attractors, confidences, contextualized
