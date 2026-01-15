@@ -21,6 +21,12 @@ from .energy import (
     total_energy,
     get_assignment_weights,
 )
+from .losses import confidence_loss, combined_loss
+from .synthetic import (
+    make_synthetic_data,
+    make_variable_length_data,
+    make_overlapping_speakers,
+)
 
 __all__ = [
     # Config
@@ -40,4 +46,11 @@ __all__ = [
     "energy_coverage",
     "total_energy",
     "get_assignment_weights",
+    # Losses
+    "confidence_loss",
+    "combined_loss",
+    # Synthetic data
+    "make_synthetic_data",
+    "make_variable_length_data",
+    "make_overlapping_speakers",
 ]
