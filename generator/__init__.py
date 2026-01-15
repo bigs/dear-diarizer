@@ -27,6 +27,7 @@ from .synthetic import (
     make_variable_length_data,
     make_overlapping_speakers,
 )
+from .refinement import refine_attractors, refine_attractors_with_trace
 
 __all__ = [
     # Config
@@ -53,4 +54,7 @@ __all__ = [
     "make_synthetic_data",
     "make_variable_length_data",
     "make_overlapping_speakers",
+    # Refinement
+    "refine_attractors",
+    "refine_attractors_with_trace",
 ]
