@@ -86,3 +86,7 @@ WavLeJEPA (model.py)
 Training supports SIGINT (Ctrl+C) graceful shutdown:
 - First Ctrl+C: Finishes current step, saves checkpoint, closes wandb
 - Second Ctrl+C: Immediate exit
+
+## Issue Tracking
+
+See `AGENTS.md` for issue tracking with **bd (beads)**. Run `bd prime` for full workflow context.
