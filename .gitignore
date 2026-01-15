@@ -27,3 +27,5 @@ podcasts.db
 shards/
 checkpoints/
 wandb/
+
+.ob1
