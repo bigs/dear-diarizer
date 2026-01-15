@@ -11,6 +11,7 @@ from .mamba import (
     Mamba2Block,
     LinearAttentionStack,
 )
+from .attractor import AttractorGenerator
 
 __all__ = [
     # Config
@@ -20,4 +21,6 @@ __all__ = [
     "Mamba2Layer",
     "Mamba2Block",
     "LinearAttentionStack",
+    # Main generator
+    "AttractorGenerator",
 ]
