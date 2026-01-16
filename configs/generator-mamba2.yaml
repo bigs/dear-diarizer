@@ -1,0 +1,42 @@
+# Generator config using Mamba2 SSM backend
+# Example: uv run python -m generator.train --config configs/generator-mamba2.yaml
+
+# Common dimensions
+input_dim: 768      # WavLeJEPA output dim
+hidden_dim: 768     # Internal hidden size
+attractor_dim: 768  # Output attractor dimension
+
+# Linear attention stack
+num_layers: 4
+
+# SSM backend: Mamba2
+mamba2:
+  state_size: 128       # SSM state size (N)
+  head_dim: 64          # Dimension per head
+  expand: 2             # Expansion factor for intermediate size
+  conv_kernel: 4        # Depthwise conv kernel size
+  chunk_size: 256       # Chunk size for SSD computation
+  time_step_min: 0.001
+  time_step_max: 0.1
+  time_step_floor: 0.0001
+  time_step_limit: [0.0, .inf]
+  A_initializer_range: [1.0, 16.0]
+
+# Cross-attention
+num_cross_attn_heads: 8
+
+# Generation
+max_attractors: 10
+confidence_threshold: 0.5
+
+# Energy weights
+lambda_separation: 1.0
+lambda_coverage: 0.1
+separation_margin: 1.0
+
+# Temperature annealing
+tau_start: 1.0
+tau_end: 0.1
+
+# Confidence training
+usage_threshold: 0.5

@@ -1,0 +1,42 @@
+# Generator config using Gated DeltaNet SSM backend
+# Example: uv run python -m generator.train --config configs/generator-deltanet.yaml
+
+# Common dimensions
+input_dim: 768      # WavLeJEPA output dim
+hidden_dim: 768     # Internal hidden size (must match deltanet.hidden_size)
+attractor_dim: 768  # Output attractor dimension
+
+# Linear attention stack
+num_layers: 4
+
+# SSM backend: Gated DeltaNet (Qwen3-Next style)
+deltanet:
+  hidden_size: 768    # Must match hidden_dim above
+  num_heads: 6        # Number of attention heads for Q/K
+  # num_v_heads_: null  # Optional: set > num_heads for GVA
+  head_k_dim: 128     # Dimension per Q/K head (768 / 6 = 128)
+  expand_v: 2.0       # Value head expansion (head_v_dim = 256)
+  num_layers: 4       # Ignored - uses top-level num_layers
+  use_gate: true      # Output gating
+  use_short_conv: true
+  conv_size: 4
+  norm_eps: 0.00001
+
+# Cross-attention
+num_cross_attn_heads: 8
+
+# Generation
+max_attractors: 10
+confidence_threshold: 0.5
+
+# Energy weights
+lambda_separation: 1.0
+lambda_coverage: 0.1
+separation_margin: 1.0
+
+# Temperature annealing
+tau_start: 1.0
+tau_end: 0.1
+
+# Confidence training
+usage_threshold: 0.5

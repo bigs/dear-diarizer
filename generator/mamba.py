@@ -1,16 +1,21 @@
-"""Mamba2-based linear attention layers for the Generator.
+"""Linear attention layers for the Generator.
 
-This module provides Equinox wrappers around the mamba2-jax SSD implementation.
-The core SSD algorithm is pure JAX; we just manage parameters with Equinox.
+This module provides Equinox wrappers around SSM implementations:
+- Mamba2 (via mamba2-jax SSD)
+- Gated DeltaNet (via jax_gated_deltanet)
+
+The SSM backend is selected based on GeneratorConfig.
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import equinox as eqx
 from jaxtyping import Array, Float, PRNGKeyArray
 from einops import rearrange
+
+from jax_gated_deltanet import GatedDeltaNetBlock
 
 from .config import GeneratorConfig
 from .ssd import ssd_stable
@@ -60,13 +65,15 @@ class Mamba2Layer(eqx.Module):
 
     def __init__(self, config: GeneratorConfig, *, key: PRNGKeyArray):
         self.config = config
+        m2 = config.mamba2  # Mamba2-specific config
+        assert m2 is not None, "Mamba2Layer requires config.mamba2 to be set"
 
         keys = jax.random.split(key, 5)
 
         hidden_dim = config.hidden_dim
-        intermediate_size = config.intermediate_size
-        state_size = config.state_size
-        num_heads = config.num_heads
+        intermediate_size = m2.intermediate_size(hidden_dim)
+        state_size = m2.state_size
+        num_heads = m2.num_heads(hidden_dim)
 
         # Input projection: hidden_dim -> intermediate_size + 2*state_size + num_heads
         # (x, B, C, dt) - no z/gate in simplified version
@@ -78,16 +85,16 @@ class Mamba2Layer(eqx.Module):
         self.conv1d = eqx.nn.Conv1d(
             in_channels=conv1d_dim,
             out_channels=conv1d_dim,
-            kernel_size=config.conv_kernel,
-            padding=((config.conv_kernel - 1, 0),),  # causal: left-pad only
+            kernel_size=m2.conv_kernel,
+            padding=((m2.conv_kernel - 1, 0),),  # causal: left-pad only
             groups=conv1d_dim,  # depthwise
             use_bias=True,
             key=keys[1],
         )
 
         # dt_bias initialization (inverse softplus of uniform in log space)
-        dt_min, dt_max = config.time_step_min, config.time_step_max
-        dt_floor = config.time_step_floor
+        dt_min, dt_max = m2.time_step_min, m2.time_step_max
+        dt_floor = m2.time_step_floor
         u = jax.random.uniform(keys[2], (num_heads,))
         dt = jnp.exp(u * (jnp.log(dt_max) - jnp.log(dt_min)) + jnp.log(dt_min))
         dt = jnp.maximum(dt, dt_floor)
@@ -95,7 +102,7 @@ class Mamba2Layer(eqx.Module):
         self.dt_bias = dt + jnp.log(-jnp.expm1(-dt))
 
         # A_log initialization (log of uniform in A_initializer_range)
-        A_low, A_high = config.A_initializer_range
+        A_low, A_high = m2.A_initializer_range
         A = jax.random.uniform(keys[3], (num_heads,), minval=A_low, maxval=A_high)
         self.A_log = jnp.log(A)
 
@@ -126,7 +133,11 @@ class Mamba2Layer(eqx.Module):
             (output, final_state): Output tensor and optional final state
         """
         cfg = self.config
+        m2 = cfg.mamba2
+        assert m2 is not None  # Guaranteed by __init__ assertion
         seq_len = x.shape[0]
+        intermediate_size = cfg.intermediate_size
+        state_size = m2.state_size
 
         # Project input
         xBC_dt = jax.vmap(self.in_proj)(x)  # [seq_len, in_proj_dim]
@@ -135,9 +146,9 @@ class Mamba2Layer(eqx.Module):
         x_conv, B_t, C_t, dt = jnp.split(
             xBC_dt,
             [
-                cfg.intermediate_size,
-                cfg.intermediate_size + cfg.state_size,
-                cfg.intermediate_size + 2 * cfg.state_size,
+                intermediate_size,
+                intermediate_size + state_size,
+                intermediate_size + 2 * state_size,
             ],
             axis=-1,
         )
@@ -155,7 +166,7 @@ class Mamba2Layer(eqx.Module):
         # Split back
         x_ssm, B_ssm, C_ssm = jnp.split(
             xBC,
-            [cfg.intermediate_size, cfg.intermediate_size + cfg.state_size],
+            [intermediate_size, intermediate_size + state_size],
             axis=-1,
         )
 
@@ -166,16 +177,18 @@ class Mamba2Layer(eqx.Module):
         C_batched = C_ssm[None, ...]  # [1, seq_len, state_size]
 
         # Reshape x for SSD: [batch, seq_len, num_heads, head_dim]
-        x_ssd = rearrange(x_batched, "b l (h p) -> b l h p", p=cfg.head_dim)
+        num_heads = cfg.num_heads
+        head_dim = m2.head_dim
+        x_ssd = rearrange(x_batched, "b l (h p) -> b l h p", p=head_dim)
 
         # Broadcast B, C across heads: [batch, seq_len, num_heads, state_size]
         B_ssd = jnp.broadcast_to(
             B_batched[:, :, None, :],
-            (1, seq_len, cfg.num_heads, cfg.state_size),
+            (1, seq_len, num_heads, state_size),
         )
         C_ssd = jnp.broadcast_to(
             C_batched[:, :, None, :],
-            (1, seq_len, cfg.num_heads, cfg.state_size),
+            (1, seq_len, num_heads, state_size),
         )
 
         # Prepare initial state if provided
@@ -191,11 +204,11 @@ class Mamba2Layer(eqx.Module):
             A=A,
             B=B_ssd,
             C=C_ssd,
-            chunk_size=cfg.chunk_size,
+            chunk_size=m2.chunk_size,
             D=self.D,
             dt_bias=self.dt_bias,
-            dt_min=cfg.time_step_limit[0],
-            dt_max=cfg.time_step_limit[1],
+            dt_min=m2.time_step_limit[0],
+            dt_max=m2.time_step_limit[1],
             initial_states=init_state,
             return_final_state=return_final_state,
         )
@@ -241,14 +254,17 @@ class Mamba2Block(eqx.Module):
 
 
 class LinearAttentionStack(eqx.Module):
-    """Stack of Mamba2 blocks for contextualizing frame embeddings.
+    """Stack of SSM blocks for contextualizing frame embeddings.
 
     This is the first stage of the Generator pipeline:
     WavLeJEPA embeddings -> LinearAttentionStack -> Contextualized frames
+
+    The SSM backend (Mamba2 or GatedDeltaNet) is selected based on
+    which config is provided in GeneratorConfig.
     """
 
     config: GeneratorConfig = eqx.field(static=True)
-    layers: list[Mamba2Block]
+    layers: list[Union[Mamba2Block, GatedDeltaNetBlock]]
     input_proj: Optional[eqx.nn.Linear]
     final_norm: RMSNorm
 
@@ -265,11 +281,20 @@ class LinearAttentionStack(eqx.Module):
         else:
             self.input_proj = None
 
-        # Stack of Mamba2 blocks
-        self.layers = [
-            Mamba2Block(config, key=keys[i + 1])
-            for i in range(config.num_layers)
-        ]
+        # Instantiate SSM blocks based on config
+        if config.mamba2 is not None:
+            # Use Mamba2 backend
+            self.layers = [
+                Mamba2Block(config, key=keys[i + 1])
+                for i in range(config.num_layers)
+            ]
+        else:
+            # Use GatedDeltaNet backend
+            assert config.deltanet is not None
+            self.layers = [
+                GatedDeltaNetBlock(config.deltanet, key=keys[i + 1])
+                for i in range(config.num_layers)
+            ]
 
         # Final normalization
         self.final_norm = RMSNorm(config.hidden_dim, key=keys[-1])
@@ -286,11 +311,11 @@ class LinearAttentionStack(eqx.Module):
         Returns:
             Contextualized representations [seq_len, hidden_dim]
         """
-        # Optional input projection (ssd_stable handles padding internally)
+        # Optional input projection
         if self.input_proj is not None:
             x = jax.vmap(self.input_proj)(x)
 
-        # Process through Mamba2 blocks
+        # Process through SSM blocks (both backends have same interface)
         for layer in self.layers:
             x, _ = layer(x, return_final_state=False)
 
