@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import gc
 import io
 import os
 import sys
@@ -98,17 +99,30 @@ def process_file(
         audio = load_audio(path, sample_rate)
         chunks = split_into_chunks(audio, chunk_samples, min_chunk_samples)
 
+        # Free the full audio array immediately
+        del audio
+
         results = []
         for i, chunk in enumerate(chunks):
             key = f"{path.stem}_{i:04d}"
-            chunk = chunk.astype(dtype)
+            chunk_typed = chunk.astype(dtype)
 
             # Serialize to bytes
             buf = io.BytesIO()
-            np.save(buf, chunk)
+            np.save(buf, chunk_typed)
             npy_bytes = buf.getvalue()
+            buf.close()
 
             results.append((key, npy_bytes))
+
+            # Cleanup intermediate arrays
+            del chunk_typed
+
+        # Free the chunks list
+        del chunks
+
+        # Force garbage collection in worker before returning
+        gc.collect()
 
         return results
     except Exception as e:
@@ -215,8 +229,8 @@ def main():
     tqdm.write(f"Min chunk size: {min_chunk_samples} samples ({args.min_chunk_duration}s)")
     tqdm.write(f"Output dtype: {dtype}")
 
-    # Set up worker pool
-    num_workers = args.workers or max(1, cpu_count() - 1)
+    # Set up worker pool - conservative settings to manage memory
+    num_workers = args.workers or max(1, min(4, cpu_count() - 1))
     tqdm.write(f"Using {num_workers} workers")
 
     # Create process function with fixed args
@@ -236,8 +250,8 @@ def main():
         str(args.output),
         maxsize=int(args.max_shard_size),
     ) as sink:
-        with Pool(num_workers) as pool:
-            # Use imap_unordered for better throughput
+        # maxtasksperchild=5 restarts workers frequently to free leaked memory
+        with Pool(num_workers, maxtasksperchild=5) as pool:
             for chunks in tqdm(
                 pool.imap_unordered(process_fn, audio_files),
                 total=len(audio_files),
@@ -250,6 +264,10 @@ def main():
                     })
                     total_chunks += 1
                     total_bytes += len(npy_bytes)
+
+                # Explicit cleanup after each file
+                del chunks
+                gc.collect()
 
     tqdm.write(f"\nDone!")
     tqdm.write(f"Total chunks: {total_chunks}")
