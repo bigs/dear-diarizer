@@ -14,6 +14,7 @@ from .deltanet import gated_delta_rule, gated_delta_rule_recurrent, l2_normalize
 from .layers import GatedDeltaNetBlock, GatedDeltaNetLayer, GatedDeltaNetStack
 from .norm import FusedRMSNormGated, RMSNorm
 from .conv import ShortConvolution
+from .ops import gated_delta_rule_chunk
 
 __all__ = [
     # Config
@@ -21,6 +22,7 @@ __all__ = [
     # Core recurrence (Pallas swap-in point)
     "gated_delta_rule",
     "gated_delta_rule_recurrent",
+    "gated_delta_rule_chunk",
     "l2_normalize",
     # Layers
     "GatedDeltaNetLayer",

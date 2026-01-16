@@ -284,3 +284,105 @@ class TestGradients:
 
         assert jnp.all(jnp.isfinite(first_layer_grad))
         assert jnp.all(jnp.isfinite(last_layer_grad))
+
+
+class TestChunkwise:
+    """Tests for chunkwise parallel implementation."""
+
+    def test_chunk_output_matches_naive(self, key):
+        """Verify chunkwise output matches naive scan."""
+        from jax_gated_deltanet.ops.chunk import gated_delta_rule_chunk
+
+        batch, seq, heads, head_k, head_v = 2, 64, 4, 32, 64
+
+        q = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        k = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        v = jax.random.normal(key, (batch, seq, heads, head_v))
+        g = jax.nn.log_sigmoid(jax.random.normal(key, (batch, seq, heads)))
+        beta = jax.nn.sigmoid(jax.random.normal(key, (batch, seq, heads)))
+
+        output_naive, _ = gated_delta_rule(q, k, v, g, beta)
+        output_chunk, _ = gated_delta_rule_chunk(q, k, v, g, beta, chunk_size=16)
+
+        assert jnp.allclose(output_naive, output_chunk, atol=1e-5)
+
+    def test_chunk_state_matches_naive(self, key):
+        """Verify chunkwise final state matches naive scan."""
+        from jax_gated_deltanet.ops.chunk import gated_delta_rule_chunk
+
+        batch, seq, heads, head_k, head_v = 2, 64, 4, 32, 64
+
+        q = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        k = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        v = jax.random.normal(key, (batch, seq, heads, head_v))
+        g = jax.nn.log_sigmoid(jax.random.normal(key, (batch, seq, heads)))
+        beta = jax.nn.sigmoid(jax.random.normal(key, (batch, seq, heads)))
+
+        _, state_naive = gated_delta_rule(q, k, v, g, beta, output_final_state=True)
+        _, state_chunk = gated_delta_rule_chunk(
+            q, k, v, g, beta, output_final_state=True, chunk_size=16
+        )
+
+        assert jnp.allclose(state_naive, state_chunk, atol=1e-5)
+
+    def test_chunk_with_initial_state(self, key):
+        """Verify chunkwise works with initial state."""
+        from jax_gated_deltanet.ops.chunk import gated_delta_rule_chunk
+
+        batch, seq, heads, head_k, head_v = 2, 64, 4, 32, 64
+
+        q = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        k = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        v = jax.random.normal(key, (batch, seq, heads, head_v))
+        g = jax.nn.log_sigmoid(jax.random.normal(key, (batch, seq, heads)))
+        beta = jax.nn.sigmoid(jax.random.normal(key, (batch, seq, heads)))
+        h0 = jax.random.normal(key, (batch, heads, head_k, head_v)) * 0.1
+
+        output_naive, state_naive = gated_delta_rule(
+            q, k, v, g, beta, initial_state=h0, output_final_state=True
+        )
+        output_chunk, state_chunk = gated_delta_rule_chunk(
+            q, k, v, g, beta, initial_state=h0, output_final_state=True, chunk_size=16
+        )
+
+        assert jnp.allclose(output_naive, output_chunk, atol=1e-5)
+        assert jnp.allclose(state_naive, state_chunk, atol=1e-5)
+
+    def test_chunk_non_divisible_length(self, key):
+        """Verify chunkwise handles non-divisible sequence lengths."""
+        from jax_gated_deltanet.ops.chunk import gated_delta_rule_chunk
+
+        batch, seq, heads, head_k, head_v = 2, 50, 4, 32, 64  # 50 not divisible by 16
+
+        q = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        k = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        v = jax.random.normal(key, (batch, seq, heads, head_v))
+        g = jax.nn.log_sigmoid(jax.random.normal(key, (batch, seq, heads)))
+        beta = jax.nn.sigmoid(jax.random.normal(key, (batch, seq, heads)))
+
+        output_naive, _ = gated_delta_rule(q, k, v, g, beta)
+        output_chunk, _ = gated_delta_rule_chunk(q, k, v, g, beta, chunk_size=16)
+
+        assert output_chunk.shape == output_naive.shape
+        assert jnp.allclose(output_naive, output_chunk, atol=1e-5)
+
+    def test_chunk_gradient_flow(self, key):
+        """Verify gradients flow through chunkwise implementation."""
+        from jax_gated_deltanet.ops.chunk import gated_delta_rule_chunk
+
+        batch, seq, heads, head_k, head_v = 2, 32, 4, 32, 64
+
+        q = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        k = l2_normalize(jax.random.normal(key, (batch, seq, heads, head_k)))
+        v = jax.random.normal(key, (batch, seq, heads, head_v))
+        g = jax.nn.log_sigmoid(jax.random.normal(key, (batch, seq, heads)))
+        beta = jax.nn.sigmoid(jax.random.normal(key, (batch, seq, heads)))
+
+        def loss_fn(q, k, v, g, beta):
+            output, _ = gated_delta_rule_chunk(q, k, v, g, beta, chunk_size=16)
+            return jnp.mean(output**2)
+
+        grads = jax.grad(loss_fn, argnums=(0, 1, 2, 3, 4))(q, k, v, g, beta)
+
+        for i, grad in enumerate(grads):
+            assert jnp.all(jnp.isfinite(grad)), f"Gradient {i} has non-finite values"
