@@ -1,7 +1,12 @@
 """Extract embeddings from frozen WavLeJEPA checkpoint."""
 
 import json
+import os
 from pathlib import Path
+
+# Set JAX to allocate GPU memory as needed (not pre-allocate)
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.25")
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import jax
 import jax.numpy as jnp
