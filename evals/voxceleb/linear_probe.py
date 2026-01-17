@@ -39,11 +39,10 @@ def train_linear_probe(
         stratify=labels,
     )
 
-    # Train logistic regression (multinomial)
+    # Train logistic regression (multinomial is default in sklearn >= 1.5)
     clf = LogisticRegression(
         max_iter=max_iter,
         random_state=random_state,
-        multi_class="multinomial",
         solver="lbfgs",
         verbose=1,
     )
@@ -109,7 +108,6 @@ def cross_validate_probe(
         clf = LogisticRegression(
             max_iter=max_iter,
             random_state=random_state,
-            multi_class="multinomial",
             solver="lbfgs",
         )
         clf.fit(X_train, y_train)
