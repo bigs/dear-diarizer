@@ -60,8 +60,9 @@ def main():
     parser.add_argument(
         "--max-duration",
         type=float,
-        default=30.0,
-        help="Maximum audio duration in seconds (longer files are cropped)",
+        default=10.0,
+        help="Maximum audio duration in seconds (longer files are cropped). "
+             "Default 10s produces ~500 frames at 50Hz, safely under max_seq_len=1000.",
     )
 
     args = parser.parse_args()

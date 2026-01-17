@@ -23,7 +23,7 @@ from wavlejepa.training.config import TrainingConfig
 def load_audio(
     path: Path,
     sample_rate: int = 16000,
-    max_duration: float = 30.0,
+    max_duration: float = 10.0,
 ) -> jnp.ndarray:
     """Load and resample audio file.
 
@@ -70,7 +70,7 @@ def extract_embeddings(
     audio_paths: list[Path],
     batch_size: int = 32,
     sample_rate: int = 16000,
-    max_duration: float = 30.0,
+    max_duration: float = 10.0,
 ) -> np.ndarray:
     """Extract embeddings for a list of audio files.
 
