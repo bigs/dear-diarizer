@@ -20,20 +20,27 @@ from wavlejepa.training.checkpoint import WavLeJEPACheckpointer
 from wavlejepa.training.config import TrainingConfig
 
 
-def load_audio(path: Path, sample_rate: int = 16000) -> jnp.ndarray:
+def load_audio(
+    path: Path,
+    sample_rate: int = 16000,
+    max_duration: float = 30.0,
+) -> jnp.ndarray:
     """Load and resample audio file.
 
     Args:
         path: Audio file path
         sample_rate: Target sample rate
+        max_duration: Maximum duration in seconds (crops longer audio)
 
     Returns:
         Audio waveform as JAX array
     """
-    audio, _ = librosa.load(path, sr=sample_rate, mono=True)
+    # Load with duration limit to avoid OOM on very long files
+    audio, _ = librosa.load(path, sr=sample_rate, mono=True, duration=max_duration)
     return jnp.array(audio, dtype=jnp.float32)
 
 
+@eqx.filter_jit
 def extract_utterance_embedding(
     model: WavLeJEPA,
     audio: jnp.ndarray,
@@ -63,6 +70,7 @@ def extract_embeddings(
     audio_paths: list[Path],
     batch_size: int = 32,
     sample_rate: int = 16000,
+    max_duration: float = 30.0,
 ) -> np.ndarray:
     """Extract embeddings for a list of audio files.
 
@@ -71,6 +79,7 @@ def extract_embeddings(
         audio_paths: List of audio file paths
         batch_size: Batch size (currently processes sequentially)
         sample_rate: Audio sample rate
+        max_duration: Maximum audio duration in seconds (crops longer files)
 
     Returns:
         Embeddings array [num_utterances, 768]
@@ -104,10 +113,16 @@ def extract_embeddings(
     model = state.model
 
     # Extract embeddings
+    print("JIT compiling extraction function (first call will be slow)...")
     embeddings = []
-    for audio_path in tqdm(audio_paths, desc="Extracting embeddings"):
-        audio = load_audio(audio_path, sample_rate=sample_rate)
+
+    for i, audio_path in enumerate(tqdm(audio_paths, desc="Extracting embeddings")):
+        audio = load_audio(audio_path, sample_rate=sample_rate, max_duration=max_duration)
         emb = extract_utterance_embedding(model, audio)
         embeddings.append(np.array(emb))
+
+        # Print speed info after warmup
+        if i == 0:
+            print("First extraction complete (JIT compilation done). Subsequent calls will be faster.")
 
     return np.stack(embeddings)

@@ -57,6 +57,12 @@ def main():
         default=16000,
         help="Audio sample rate",
     )
+    parser.add_argument(
+        "--max-duration",
+        type=float,
+        default=30.0,
+        help="Maximum audio duration in seconds (longer files are cropped)",
+    )
 
     args = parser.parse_args()
 
@@ -82,11 +88,13 @@ def main():
 
     # Extract embeddings
     print("Extracting embeddings from frozen WavLeJEPA encoder...")
+    print(f"(Cropping audio to {args.max_duration}s to fit model's max_seq_len)")
     embeddings = extract_embeddings(
         checkpoint_path=args.checkpoint,
         audio_paths=file_paths,
         batch_size=args.batch_size,
         sample_rate=args.sample_rate,
+        max_duration=args.max_duration,
     )
     print(f"Extracted embeddings shape: {embeddings.shape}")
     print()
