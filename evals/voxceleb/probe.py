@@ -64,6 +64,12 @@ def main():
         help="Maximum audio duration in seconds (longer files are cropped). "
              "Default 10s produces ~500 frames at 50Hz, safely under max_seq_len=1000.",
     )
+    parser.add_argument(
+        "--max-speakers",
+        type=int,
+        default=None,
+        help="Limit to first N speakers for quick testing (default: all speakers)",
+    )
 
     args = parser.parse_args()
 
@@ -79,7 +85,7 @@ def main():
 
     # Load VoxCeleb data
     print("Loading VoxCeleb1 test set...")
-    audio_files = load_voxceleb1_test(args.voxceleb_root)
+    audio_files = load_voxceleb1_test(args.voxceleb_root, max_speakers=args.max_speakers)
     print(f"Found {len(audio_files)} utterances from {len(set(y for _, y in audio_files))} speakers")
     print()
 

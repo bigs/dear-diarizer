@@ -3,11 +3,15 @@
 from pathlib import Path
 
 
-def load_voxceleb1_test(root: Path) -> list[tuple[Path, int]]:
+def load_voxceleb1_test(
+    root: Path,
+    max_speakers: int | None = None,
+) -> list[tuple[Path, int]]:
     """Load VoxCeleb1 test set.
 
     Args:
         root: Path to VoxCeleb1 root directory
+        max_speakers: If set, limit to first N speakers (for quick testing)
 
     Returns:
         List of (audio_path, speaker_id) pairs where speaker_id is an integer
@@ -28,6 +32,10 @@ def load_voxceleb1_test(root: Path) -> list[tuple[Path, int]]:
 
     # Find all speaker directories (id####)
     speaker_dirs = sorted([d for d in root.iterdir() if d.is_dir() and d.name.startswith("id")])
+
+    # Limit speakers if requested
+    if max_speakers is not None:
+        speaker_dirs = speaker_dirs[:max_speakers]
 
     if not speaker_dirs:
         raise ValueError(f"No speaker directories found in {root}")
