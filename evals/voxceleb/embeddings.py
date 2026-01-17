@@ -36,19 +36,16 @@ def extract_utterance_embedding(
     """Extract utterance embedding from audio.
 
     Args:
-        model: Frozen WavLeJEPA model
+        model: Frozen WavLeJEPA model (no gradients computed)
         audio: Audio waveform [T]
 
     Returns:
         Utterance embedding [768] (mean-pooled frame embeddings)
     """
-    # Stop gradients to encoder
-    waveform_encoder = jax.lax.stop_gradient(model.waveform_encoder)
-    context_encoder = jax.lax.stop_gradient(model.context_encoder)
-
     # Process: raw audio → frame embeddings → contextualized frames
-    frame_embeddings = waveform_encoder(audio)  # [N, 768]
-    contextualized = context_encoder(frame_embeddings)  # [N, 768]
+    # No gradient computation - we're just doing inference
+    frame_embeddings = model.waveform_encoder(audio)  # [N, 768]
+    contextualized = model.context_encoder(frame_embeddings)  # [N, 768]
 
     # Mean pool over time to get utterance-level embedding
     utterance_emb = jnp.mean(contextualized, axis=0)  # [768]
