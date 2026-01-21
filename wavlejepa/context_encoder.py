@@ -182,6 +182,7 @@ class ContextEncoder(eqx.Module):
     embed_dim: int = eqx.field(static=True)
     num_layers: int = eqx.field(static=True)
     top_k_layers: int = eqx.field(static=True)
+    top_k_norm: str = eqx.field(static=True)
 
     pos_encoding: SinusoidalPositionalEncoding
     layers: list[TransformerEncoderLayer]
@@ -197,6 +198,7 @@ class ContextEncoder(eqx.Module):
         layer_norm_eps: float = 1e-6,
         max_seq_len: int = 1000,
         top_k_layers: int = 8,
+        top_k_norm: str = "instance",
         *,
         key: PRNGKeyArray,
     ):
@@ -210,11 +212,18 @@ class ContextEncoder(eqx.Module):
             layer_norm_eps: LayerNorm epsilon (default 1e-6)
             max_seq_len: Maximum sequence length for positional encoding
             top_k_layers: Number of top layers to average for output (default 8)
+            top_k_norm: Normalization for top-k averaging ("instance", "layer", "none")
             key: JAX PRNG key
         """
+        if top_k_norm not in {"instance", "layer", "none"}:
+            raise ValueError(
+                f"top_k_norm must be one of 'instance', 'layer', or 'none' "
+                f"(got {top_k_norm!r})"
+            )
         self.embed_dim = embed_dim
         self.num_layers = num_layers
         self.top_k_layers = top_k_layers
+        self.top_k_norm = top_k_norm
 
         keys = jax.random.split(key, num_layers)
 
@@ -329,15 +338,23 @@ class ContextEncoder(eqx.Module):
         k = self.top_k_layers
         top_k_outputs = layer_outputs[-k:]  # Last K layers
 
-        # Instance normalize each layer's output
-        def instance_norm(
-            z: Float[Array, "seq_len embed_dim"],
-        ) -> Float[Array, "seq_len embed_dim"]:
-            mean = jnp.mean(z, axis=-1, keepdims=True)
-            var = jnp.var(z, axis=-1, keepdims=True)
-            return (z - mean) / jnp.sqrt(var + 1e-6)
+        if self.top_k_norm == "instance":
+            # Normalize each timestep across embedding dim
+            def instance_norm(
+                z: Float[Array, "seq_len embed_dim"],
+            ) -> Float[Array, "seq_len embed_dim"]:
+                mean = jnp.mean(z, axis=-1, keepdims=True)
+                var = jnp.var(z, axis=-1, keepdims=True)
+                return (z - mean) / jnp.sqrt(var + 1e-6)
 
-        normalized_outputs = [instance_norm(out) for out in top_k_outputs]
+            normalized_outputs = [instance_norm(out) for out in top_k_outputs]
+        elif self.top_k_norm == "layer":
+            # Use trained LayerNorm parameters (shared with final norm)
+            normalized_outputs = [
+                jax.vmap(self.final_norm)(out) for out in top_k_outputs
+            ]
+        else:
+            normalized_outputs = top_k_outputs
 
         # Average across layers
         stacked = jnp.stack(normalized_outputs, axis=0)  # [K, seq_len, embed_dim]

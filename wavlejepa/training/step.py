@@ -141,6 +141,7 @@ def make_train_step(
                 outputs,
                 loss_key,
                 sigreg_weight=loss_config.sigreg_weight,
+                sigreg_encoder_weight=loss_config.sigreg_encoder_weight,
                 num_slices=loss_config.num_slices,
             )
             return total_loss, metrics

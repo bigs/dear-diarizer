@@ -29,6 +29,7 @@ class LossConfig:
     """Loss function weights."""
 
     sigreg_weight: float = 0.02
+    sigreg_encoder_weight: float = 0.0
     num_slices: int = 256
 
 

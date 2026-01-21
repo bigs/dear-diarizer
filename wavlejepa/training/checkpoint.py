@@ -91,6 +91,7 @@ class WavLeJEPACheckpointer:
                     "context_ffn_dim": self.model_config.context_ffn_dim,
                     "context_dropout": self.model_config.context_dropout,
                     "context_top_k_layers": self.model_config.context_top_k_layers,
+                    "context_top_k_norm": self.model_config.context_top_k_norm,
                     "predictor_dim": self.model_config.predictor_dim,
                     "predictor_num_heads": self.model_config.predictor_num_heads,
                     "predictor_num_layers": self.model_config.predictor_num_layers,

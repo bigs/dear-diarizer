@@ -102,6 +102,7 @@ def compute_loss(
     outputs: dict[str, Array],
     key: PRNGKeyArray,
     sigreg_weight: float = 0.02,
+    sigreg_encoder_weight: float = 0.0,
     num_slices: int = 256,
 ) -> tuple[Float[Array, ""], dict[str, Float[Array, ""]]]:
     """
@@ -121,7 +122,8 @@ def compute_loss(
             - num_context: Number of valid context positions
             - num_targets: Number of valid target positions
         key: PRNG key for SIGReg random projections
-        sigreg_weight: Weight for SIGReg loss (λ, default 0.02)
+        sigreg_weight: Weight for SIGReg loss on projected space (λ, default 0.02)
+        sigreg_encoder_weight: Weight for SIGReg on encoder embeddings (default 0.0)
         num_slices: Number of random slices for SIGReg
 
     Returns:
@@ -139,7 +141,7 @@ def compute_loss(
     )
 
     # SIGReg on both context and prediction projections
-    key1, key2 = jax.random.split(key)
+    key1, key2, key3, key4 = jax.random.split(key, 4)
     sig_loss_ctx = masked_sigreg_loss(
         outputs["projected_context"], num_context, key1, num_slices
     )
@@ -148,8 +150,20 @@ def compute_loss(
     )
     sig_loss = (sig_loss_ctx + sig_loss_pred) / 2
 
+    sig_loss_encoder = jnp.array(0.0, dtype=inv_loss.dtype)
+    sig_loss_encoder_ctx = sig_loss_encoder
+    sig_loss_encoder_tgt = sig_loss_encoder
+    if sigreg_encoder_weight > 0:
+        sig_loss_encoder_ctx = masked_sigreg_loss(
+            outputs["context_embeddings"], num_context, key3, num_slices
+        )
+        sig_loss_encoder_tgt = masked_sigreg_loss(
+            outputs["targets"], num_targets, key4, num_slices
+        )
+        sig_loss_encoder = (sig_loss_encoder_ctx + sig_loss_encoder_tgt) / 2
+
     # Total loss
-    total = inv_loss + sigreg_weight * sig_loss
+    total = inv_loss + sigreg_weight * sig_loss + sigreg_encoder_weight * sig_loss_encoder
 
     metrics = {
         "loss/total": total,
@@ -157,6 +171,9 @@ def compute_loss(
         "loss/sigreg": sig_loss,
         "loss/sigreg_context": sig_loss_ctx,
         "loss/sigreg_predictions": sig_loss_pred,
+        "loss/sigreg_encoder": sig_loss_encoder,
+        "loss/sigreg_encoder_context": sig_loss_encoder_ctx,
+        "loss/sigreg_encoder_targets": sig_loss_encoder_tgt,
     }
 
     return total, metrics

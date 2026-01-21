@@ -44,7 +44,7 @@ uv run pyright
 ```
 WavLeJEPA (model.py)
 ├── WaveformEncoder    - Conv stack: raw audio [T] → embeddings [N, 768] at 100Hz
-├── ContextEncoder     - Transformer: embeddings → contextualized representations
+├── ContextEncoder     - Transformer: embeddings → contextualized representations (top-k norm configurable)
 ├── Predictor          - Cross-attention: predicts masked targets from context
 └── Projector          - MLP: maps to SIGReg space (training only)
 ```
@@ -58,6 +58,7 @@ WavLeJEPA (model.py)
 ### Loss Functions (`losses.py`, `sigreg.py`)
 - **Invariance loss**: MSE between predicted and actual target representations (averaged over batch)
 - **SIGReg loss**: Epps-Pulley test statistic measuring deviation from N(0,I). Intentionally scales with batch size (× N) per the statistical test formulation
+- **Encoder-space SIGReg** (optional): same regularizer applied to pre-projector embeddings via `sigreg_encoder_weight`
 
 ### Training Infrastructure (`training/`)
 - `config.py`: Dataclass configs loadable from YAML

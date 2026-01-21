@@ -152,6 +152,7 @@ class WavLeJEPAConfig:
     context_ffn_dim: int = 3072
     context_dropout: float = 0.0
     context_top_k_layers: int = 8
+    context_top_k_norm: str = "instance"
 
     # Predictor
     predictor_dim: int = 384
@@ -219,6 +220,7 @@ class WavLeJEPA(eqx.Module):
             dropout=config.context_dropout,
             max_seq_len=config.max_seq_len,
             top_k_layers=config.context_top_k_layers,
+            top_k_norm=config.context_top_k_norm,
             key=keys[1],
         )
 
@@ -261,6 +263,7 @@ class WavLeJEPA(eqx.Module):
             Dictionary containing:
             - predictions: Predicted target representations [max_seq_len, 768]
             - targets: Actual target representations [max_seq_len, 768]
+            - context_embeddings: Context representations at masked positions [max_seq_len, 768]
             - projected_context: Projected context for SIGReg [max_seq_len, 256]
             - projected_predictions: Projected predictions for SIGReg [max_seq_len, 256]
             - context_mask: Boolean context mask [seq_len]
@@ -324,6 +327,7 @@ class WavLeJEPA(eqx.Module):
         return {
             "predictions": predictions,
             "targets": targets,
+            "context_embeddings": context_at_positions,
             "projected_context": projected_context,
             "projected_predictions": projected_predictions,
             "context_mask": context_mask,
