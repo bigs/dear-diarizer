@@ -1,0 +1,35 @@
+# WavLeJEPA training config for encoder SIGReg sweep (RTX 6000 Pro)
+# Based on spark-batch128-conservative-encsig0p05.yaml with higher batch size.
+# LR scaled by sqrt(512/128) = sqrt(4) = 2x per square root rule for AdamW.
+
+precision:
+  compute_dtype: bfloat16
+  loss_in_float32: true
+
+optimizer:
+  peak_lr: 3.0e-4
+  warmup_steps: 7500
+  total_steps: 50000
+  weight_decay: 0.04
+  grad_clip_norm: 1.0
+
+loss:
+  sigreg_weight: 0.05
+  num_slices: 256
+
+data:
+  batch_size: 512
+  sample_rate: 16000
+  crop_duration: 2.0
+
+checkpoint:
+  checkpoint_dir: checkpoints-batch512-conservative-encsig0p05-rtx6000pro
+  save_every_n_steps: 2500
+  keep_n_checkpoints: 3
+
+logging:
+  project: wavlejepa
+  log_every_n_steps: 50
+  eval_every_n_steps: 500
+
+seed: 42
