@@ -1,6 +1,6 @@
 # Encoder SIGReg Sweep Instructions
 
-This sweep evaluates whether adding encoder-space SIGReg reduces collapse/anisotropy in WavLeJEPA embeddings.
+This sweep evaluates whether applying SIGReg directly to encoder embeddings reduces collapse/anisotropy.
 
 ## Prereqs
 - VoxCeleb1 audio tree: `voxceleb1/wav/`
@@ -47,7 +47,6 @@ uv run python -m evals.voxceleb.compare \
   --trials eval-downloads/veri_test.txt \
   --pooling meanstd \
   --feature-source context \
-  --collapse-include-project \
   --output results/voxceleb_compare_encsig0p0.json
 
 uv run python -m evals.voxceleb.compare \
@@ -56,7 +55,6 @@ uv run python -m evals.voxceleb.compare \
   --trials eval-downloads/veri_test.txt \
   --pooling meanstd \
   --feature-source context \
-  --collapse-include-project \
   --output results/voxceleb_compare_encsig0p05.json
 
 uv run python -m evals.voxceleb.compare \
@@ -65,7 +63,6 @@ uv run python -m evals.voxceleb.compare \
   --trials eval-downloads/veri_test.txt \
   --pooling meanstd \
   --feature-source context \
-  --collapse-include-project \
   --output results/voxceleb_compare_encsig0p1.json
 
 uv run python -m evals.voxceleb.compare \
@@ -74,7 +71,6 @@ uv run python -m evals.voxceleb.compare \
   --trials eval-downloads/veri_test.txt \
   --pooling meanstd \
   --feature-source context \
-  --collapse-include-project \
   --output results/voxceleb_compare_encsig0p2.json
 ```
 
@@ -88,7 +84,6 @@ uv run python -m evals.voxceleb.compare \
   --trials eval-downloads/veri_test.txt \
   --pooling mean \
   --feature-source topk \
-  --collapse-include-project \
   --output results/voxceleb_compare_baseline_topk.json
 ```
 

@@ -29,7 +29,6 @@ class LossConfig:
     """Loss function weights."""
 
     sigreg_weight: float = 0.02
-    sigreg_encoder_weight: float = 0.0
     num_slices: int = 256
 
 
@@ -108,10 +107,14 @@ class TrainingConfig:
 
         with open(path) as f:
             data = yaml.safe_load(f)
+        loss_data = data.get("loss", {})
+        loss_filtered = {
+            k: v for k, v in loss_data.items() if k in LossConfig.__dataclass_fields__
+        }
 
         return cls(
             optimizer=OptimizerConfig(**data.get("optimizer", {})),
-            loss=LossConfig(**data.get("loss", {})),
+            loss=LossConfig(**loss_filtered),
             checkpoint=CheckpointConfig(**data.get("checkpoint", {})),
             logging=LoggingConfig(**data.get("logging", {})),
             data=DataConfig(**data.get("data", {})),
@@ -124,10 +127,14 @@ class TrainingConfig:
         """Load from JSON file."""
         with open(path) as f:
             data = json.load(f)
+        loss_data = data.get("loss", {})
+        loss_filtered = {
+            k: v for k, v in loss_data.items() if k in LossConfig.__dataclass_fields__
+        }
 
         return cls(
             optimizer=OptimizerConfig(**data.get("optimizer", {})),
-            loss=LossConfig(**data.get("loss", {})),
+            loss=LossConfig(**loss_filtered),
             checkpoint=CheckpointConfig(**data.get("checkpoint", {})),
             logging=LoggingConfig(**data.get("logging", {})),
             data=DataConfig(**data.get("data", {})),

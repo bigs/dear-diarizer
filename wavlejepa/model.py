@@ -5,7 +5,7 @@ Full model assembly combining WavJEPA's time-domain processing
 with LeJEPA's SIGReg regularization.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Optional
 
 import jax
@@ -16,7 +16,6 @@ from jaxtyping import Array, Float, Bool, Int, PRNGKeyArray
 from .waveform_encoder import WaveformEncoder
 from .context_encoder import ContextEncoder
 from .predictor import Predictor
-from .projector import Projector
 
 
 # =============================================================================
@@ -161,10 +160,6 @@ class WavLeJEPAConfig:
     predictor_ffn_dim: int = 1536
     predictor_dropout: float = 0.0
 
-    # Projector
-    projector_hidden_dims: tuple[int, ...] = (2048, 2048)
-    projector_output_dim: int = 256
-
     # Masking
     masking: MaskingConfig = None  # type: ignore
 
@@ -174,6 +169,13 @@ class WavLeJEPAConfig:
     def __post_init__(self):
         if self.masking is None:
             self.masking = MaskingConfig()
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WavLeJEPAConfig":
+        """Load config from dict, ignoring unknown keys."""
+        field_names = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in field_names}
+        return cls(**filtered)
 
 
 # =============================================================================
@@ -191,7 +193,6 @@ class WavLeJEPA(eqx.Module):
     - WaveformEncoder: Raw audio → embeddings at 100Hz
     - ContextEncoder: Embeddings → contextualized representations
     - Predictor: Context → predicted target representations
-    - Projector: Representations → SIGReg space (training only)
     """
 
     config: WavLeJEPAConfig = eqx.field(static=True)
@@ -199,12 +200,11 @@ class WavLeJEPA(eqx.Module):
     waveform_encoder: WaveformEncoder
     context_encoder: ContextEncoder
     predictor: Predictor
-    projector: Projector
 
     def __init__(self, config: WavLeJEPAConfig, *, key: PRNGKeyArray):
         self.config = config
 
-        keys = jax.random.split(key, 4)
+        keys = jax.random.split(key, 3)
 
         self.waveform_encoder = WaveformEncoder(
             embed_dim=config.waveform_embed_dim,
@@ -236,13 +236,6 @@ class WavLeJEPA(eqx.Module):
             key=keys[2],
         )
 
-        self.projector = Projector(
-            input_dim=config.context_embed_dim,
-            hidden_dims=config.projector_hidden_dims,
-            output_dim=config.projector_output_dim,
-            key=keys[3],
-        )
-
     def forward_train(
         self,
         waveform: Float[Array, " time"],
@@ -264,8 +257,7 @@ class WavLeJEPA(eqx.Module):
             - predictions: Predicted target representations [max_seq_len, 768]
             - targets: Actual target representations [max_seq_len, 768]
             - context_embeddings: Context representations at masked positions [max_seq_len, 768]
-            - projected_context: Projected context for SIGReg [max_seq_len, 256]
-            - projected_predictions: Projected predictions for SIGReg [max_seq_len, 256]
+            - context_embeddings: Context representations at masked positions [max_seq_len, 768]
             - context_mask: Boolean context mask [seq_len]
             - target_mask: Boolean target mask [seq_len]
             - num_context: Number of valid context positions
@@ -320,16 +312,10 @@ class WavLeJEPA(eqx.Module):
             inference=False,
         )  # [seq_len, 768]
 
-        # 7. Project for SIGReg
-        projected_context = self.projector(context_at_positions)  # [seq_len, 256]
-        projected_predictions = self.projector(predictions)  # [seq_len, 256]
-
         return {
             "predictions": predictions,
             "targets": targets,
             "context_embeddings": context_at_positions,
-            "projected_context": projected_context,
-            "projected_predictions": projected_predictions,
             "context_mask": context_mask,
             "target_mask": target_mask,
             "num_context": num_context,
@@ -346,7 +332,6 @@ class WavLeJEPA(eqx.Module):
         Extract features for downstream tasks.
 
         Uses Top-K layer averaging on full sequence (no masking).
-        The Projector is NOT used - only for training.
 
         Args:
             waveform: Raw audio waveform [T] at 16kHz
@@ -375,6 +360,5 @@ class WavLeJEPA(eqx.Module):
             "waveform_encoder": count(self.waveform_encoder),
             "context_encoder": count(self.context_encoder),
             "predictor": count(self.predictor),
-            "projector": count(self.projector),
             "total": count(self),
         }

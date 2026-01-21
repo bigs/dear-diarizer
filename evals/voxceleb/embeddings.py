@@ -165,7 +165,7 @@ def extract_embeddings(
 
     with open(model_config_path) as f:
         model_config_dict = json.load(f)
-    model_config = WavLeJEPAConfig(**model_config_dict)
+        model_config = WavLeJEPAConfig.from_dict(model_config_dict)
 
     # Load checkpoint
     checkpointer = WavLeJEPACheckpointer(

@@ -63,23 +63,17 @@ def _run_collapse_suite(
     sample_rate: int,
     max_duration: float,
     seed: int,
-    include_project: bool,
 ) -> dict:
     sample_files = _sample_wavs(voxceleb_root, num_files, seed)
     model = _load_model(checkpoint)
 
     configs = [
-        ("topk", "topk", False),
-        ("context", "context", False),
+        ("topk", "topk"),
+        ("context", "context"),
     ]
-    if include_project:
-        configs += [
-            ("topk_projected", "topk", True),
-            ("context_projected", "context", True),
-        ]
 
     collapse_results = {}
-    for name, feature_source, project in configs:
+    for name, feature_source in configs:
         frames, file_ids = _collect_samples(
             model=model,
             audio_paths=sample_files,
@@ -88,7 +82,6 @@ def _run_collapse_suite(
             batch_size=batch_size,
             frames_per_file=frames_per_file,
             feature_source=feature_source,
-            project=project,
             seed=seed,
         )
         norms = np.linalg.norm(frames, axis=1)
@@ -209,11 +202,6 @@ def main() -> None:
     parser.add_argument("--collapse-num-pairs", type=int, default=50000)
     parser.add_argument("--collapse-max-cov-samples", type=int, default=5000)
     parser.add_argument("--collapse-batch-size", type=int, default=8)
-    parser.add_argument(
-        "--collapse-include-project",
-        action="store_true",
-        help="Include projector-space collapse metrics.",
-    )
     parser.add_argument("--collapse-seed", type=int, default=0)
 
     args = parser.parse_args()
@@ -252,7 +240,6 @@ def main() -> None:
         sample_rate=args.sample_rate,
         max_duration=args.max_duration,
         seed=args.collapse_seed,
-        include_project=args.collapse_include_project,
     )
 
     payload = {
@@ -277,7 +264,6 @@ def main() -> None:
             "sample_rate": args.sample_rate,
             "max_duration": args.max_duration,
             "seed": args.collapse_seed,
-            "include_project": args.collapse_include_project,
         },
         "results": {
             "verification": verification,

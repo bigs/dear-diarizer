@@ -45,20 +45,21 @@ uv run pyright
 WavLeJEPA (model.py)
 ├── WaveformEncoder    - Conv stack: raw audio [T] → embeddings [N, 768] at 100Hz
 ├── ContextEncoder     - Transformer: embeddings → contextualized representations (top-k norm configurable)
-├── Predictor          - Cross-attention: predicts masked targets from context
-└── Projector          - MLP: maps to SIGReg space (training only)
+└── Predictor          - Cross-attention: predicts masked targets from context
 ```
+
+Note: Projector-based checkpoints from earlier revisions are not compatible with the current
+encoder-SIGReg model definition.
 
 ### Training Flow
 1. **Masking**: Sample context blocks (~10% of frames) and target blocks (non-overlapping)
 2. **Encoding**: Process context-masked sequence through ContextEncoder
 3. **Prediction**: Predictor uses cross-attention to predict target representations
-4. **Loss**: Invariance loss (L2 prediction error) + SIGReg loss (isotropic Gaussian regularizer)
+4. **Loss**: Invariance loss (L2 prediction error) + SIGReg loss (isotropic Gaussian regularizer on encoder embeddings)
 
 ### Loss Functions (`losses.py`, `sigreg.py`)
 - **Invariance loss**: MSE between predicted and actual target representations (averaged over batch)
 - **SIGReg loss**: Epps-Pulley test statistic measuring deviation from N(0,I). Intentionally scales with batch size (× N) per the statistical test formulation
-- **Encoder-space SIGReg** (optional): same regularizer applied to pre-projector embeddings via `sigreg_encoder_weight`
 
 ### Training Infrastructure (`training/`)
 - `config.py`: Dataclass configs loadable from YAML

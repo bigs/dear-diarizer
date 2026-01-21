@@ -12,7 +12,6 @@ from .context_encoder import (
     ContextEncoder,
 )
 from .predictor import Predictor
-from .projector import Projector
 from .model import (
     MaskingConfig,
     WavLeJEPAConfig,
@@ -43,8 +42,6 @@ __all__ = [
     "ContextEncoder",
     # Predictor
     "Predictor",
-    # Projector
-    "Projector",
     # Full Model
     "MaskingConfig",
     "WavLeJEPAConfig",

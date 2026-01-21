@@ -13,8 +13,7 @@ optimizer:
   grad_clip_norm: 1.0
 
 loss:
-  sigreg_weight: 0.02
-  sigreg_encoder_weight: 0.05
+  sigreg_weight: 0.05
   num_slices: 256
 
 data:

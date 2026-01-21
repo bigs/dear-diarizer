@@ -97,10 +97,6 @@ class WavLeJEPACheckpointer:
                     "predictor_num_layers": self.model_config.predictor_num_layers,
                     "predictor_ffn_dim": self.model_config.predictor_ffn_dim,
                     "predictor_dropout": self.model_config.predictor_dropout,
-                    "projector_hidden_dims": list(
-                        self.model_config.projector_hidden_dims
-                    ),
-                    "projector_output_dim": self.model_config.projector_output_dim,
                     "max_seq_len": self.model_config.max_seq_len,
                 },
                 f,

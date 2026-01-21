@@ -36,7 +36,7 @@ def _load_model(checkpoint_path: Path) -> WavLeJEPA:
 
     training_config = TrainingConfig.from_json(training_config_path)
     with model_config_path.open("r", encoding="utf-8") as f:
-        model_config = WavLeJEPAConfig(**json.load(f))
+        model_config = WavLeJEPAConfig.from_dict(json.load(f))
 
     checkpointer = WavLeJEPACheckpointer(
         config=training_config.checkpoint,
@@ -58,7 +58,6 @@ def _collect_samples(
     batch_size: int,
     frames_per_file: int,
     feature_source: str,
-    project: bool,
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     rng = np.random.default_rng(seed)
@@ -93,10 +92,6 @@ def _collect_samples(
             if frames_per_file < valid_frames:
                 idx = rng.choice(valid_frames, size=frames_per_file, replace=False)
                 file_frames = file_frames[idx]
-            if project:
-                file_frames = np.array(
-                    jax.vmap(model.projector)(jnp.array(file_frames))
-                )
             all_frames.append(file_frames)
             file_ids.append(np.full(file_frames.shape[0], start + j, dtype=np.int32))
 
@@ -165,11 +160,6 @@ def main() -> None:
         default="topk",
         choices=["topk", "context"],
     )
-    parser.add_argument(
-        "--project",
-        action="store_true",
-        help="Apply projector to frame embeddings before analysis.",
-    )
     parser.add_argument("--num-pairs", type=int, default=50000)
     parser.add_argument("--max-cov-samples", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=0)
@@ -198,7 +188,6 @@ def main() -> None:
         batch_size=args.batch_size,
         frames_per_file=args.frames_per_file,
         feature_source=args.feature_source,
-        project=args.project,
         seed=args.seed,
     )
 

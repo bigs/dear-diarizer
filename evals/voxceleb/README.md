@@ -47,6 +47,5 @@ python -m evals.voxceleb.compare \
   --trials /path/to/veri_test.txt \
   --pooling meanstd \
   --feature-source context \
-  --collapse-include-project \
   --output results/voxceleb_compare.json
 ```

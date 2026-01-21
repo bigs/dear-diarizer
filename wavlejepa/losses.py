@@ -68,20 +68,20 @@ def masked_invariance_loss(
 
 
 def masked_sigreg_loss(
-    projected: Float[Array, "batch seq dim"],
+    embeddings: Float[Array, "batch seq dim"],
     num_valid: Int[Array, "batch"],
     key: PRNGKeyArray,
     num_slices: int = 256,
 ) -> Float[Array, ""]:
     """
-    SIGReg loss on projected representations.
+    SIGReg loss on embeddings.
 
     Flattens batch and seq dimensions, uses all positions for distribution estimation.
     The padded positions are duplicates which slightly biases the distribution,
     but this is acceptable for regularization purposes.
 
     Args:
-        projected: Projected representations [batch, seq, dim] (padded)
+        embeddings: Embeddings [batch, seq, dim] (padded)
         num_valid: Number of valid positions per sample [batch]
         key: PRNG key for random projections
         num_slices: Number of random slices for SIGReg
@@ -89,11 +89,11 @@ def masked_sigreg_loss(
     Returns:
         Scalar SIGReg loss
     """
-    batch_size, seq_len, dim = projected.shape
+    batch_size, seq_len, dim = embeddings.shape
 
     # Flatten to [batch * seq, dim] for SIGReg
     # This treats all positions (including padding) as samples
-    projected_flat = projected.reshape(-1, dim)
+    projected_flat = embeddings.reshape(-1, dim)
 
     return jnp.mean(sigreg(projected_flat, key, num_slices))
 
@@ -102,7 +102,6 @@ def compute_loss(
     outputs: dict[str, Array],
     key: PRNGKeyArray,
     sigreg_weight: float = 0.02,
-    sigreg_encoder_weight: float = 0.0,
     num_slices: int = 256,
 ) -> tuple[Float[Array, ""], dict[str, Float[Array, ""]]]:
     """
@@ -117,13 +116,11 @@ def compute_loss(
         outputs: Dictionary from WavLeJEPA.forward_train containing:
             - predictions: Predicted target representations [seq, dim]
             - targets: Actual target representations [seq, dim]
-            - projected_context: Projected context for SIGReg [seq, dim]
-            - projected_predictions: Projected predictions for SIGReg [seq, dim]
+            - context_embeddings: Context representations [seq, dim]
             - num_context: Number of valid context positions
             - num_targets: Number of valid target positions
         key: PRNG key for SIGReg random projections
-        sigreg_weight: Weight for SIGReg loss on projected space (λ, default 0.02)
-        sigreg_encoder_weight: Weight for SIGReg on encoder embeddings (default 0.0)
+        sigreg_weight: Weight for SIGReg loss on encoder embeddings (λ, default 0.02)
         num_slices: Number of random slices for SIGReg
 
     Returns:
@@ -140,40 +137,25 @@ def compute_loss(
         num_targets,
     )
 
-    # SIGReg on both context and prediction projections
-    key1, key2, key3, key4 = jax.random.split(key, 4)
+    # SIGReg on encoder embeddings (context + target)
+    key1, key2 = jax.random.split(key, 2)
     sig_loss_ctx = masked_sigreg_loss(
-        outputs["projected_context"], num_context, key1, num_slices
+        outputs["context_embeddings"], num_context, key1, num_slices
     )
-    sig_loss_pred = masked_sigreg_loss(
-        outputs["projected_predictions"], num_targets, key2, num_slices
+    sig_loss_tgt = masked_sigreg_loss(
+        outputs["targets"], num_targets, key2, num_slices
     )
-    sig_loss = (sig_loss_ctx + sig_loss_pred) / 2
-
-    sig_loss_encoder = jnp.array(0.0, dtype=inv_loss.dtype)
-    sig_loss_encoder_ctx = sig_loss_encoder
-    sig_loss_encoder_tgt = sig_loss_encoder
-    if sigreg_encoder_weight > 0:
-        sig_loss_encoder_ctx = masked_sigreg_loss(
-            outputs["context_embeddings"], num_context, key3, num_slices
-        )
-        sig_loss_encoder_tgt = masked_sigreg_loss(
-            outputs["targets"], num_targets, key4, num_slices
-        )
-        sig_loss_encoder = (sig_loss_encoder_ctx + sig_loss_encoder_tgt) / 2
+    sig_loss = (sig_loss_ctx + sig_loss_tgt) / 2
 
     # Total loss
-    total = inv_loss + sigreg_weight * sig_loss + sigreg_encoder_weight * sig_loss_encoder
+    total = inv_loss + sigreg_weight * sig_loss
 
     metrics = {
         "loss/total": total,
         "loss/invariance": inv_loss,
         "loss/sigreg": sig_loss,
         "loss/sigreg_context": sig_loss_ctx,
-        "loss/sigreg_predictions": sig_loss_pred,
-        "loss/sigreg_encoder": sig_loss_encoder,
-        "loss/sigreg_encoder_context": sig_loss_encoder_ctx,
-        "loss/sigreg_encoder_targets": sig_loss_encoder_tgt,
+        "loss/sigreg_targets": sig_loss_tgt,
     }
 
     return total, metrics
