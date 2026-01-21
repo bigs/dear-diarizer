@@ -23,9 +23,11 @@ def _resolve_path(root: Path, rel_path: str) -> Path:
     candidate = root / rel_path
     if candidate.exists():
         return candidate
-    wav_root = root / "wav"
-    candidate = wav_root / rel_path
-    if candidate.exists():
+    if root.name != "wav":
+        wav_root = root / "wav"
+        candidate = wav_root / rel_path
+        if candidate.exists():
+            return candidate
         return candidate
     return candidate
 
