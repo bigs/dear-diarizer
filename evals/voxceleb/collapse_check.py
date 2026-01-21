@@ -9,7 +9,6 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 import numpy as np
 
 from wavlejepa.model import WavLeJEPA, WavLeJEPAConfig
@@ -19,23 +18,15 @@ from wavlejepa.training.config import TrainingConfig
 from .embeddings import load_audio_padded
 
 
-@eqx.filter_jit
-def _extract_topk(model: WavLeJEPA, audio_batch: jnp.ndarray) -> jnp.ndarray:
-    return jax.vmap(lambda audio: model.extract_features(audio))(audio_batch)
-
-
-@eqx.filter_jit
-def _extract_context(model: WavLeJEPA, audio_batch: jnp.ndarray) -> jnp.ndarray:
-    def _single(audio: jnp.ndarray) -> jnp.ndarray:
+def _extract_single_frames(
+    model: WavLeJEPA, audio: jnp.ndarray, feature_source: str
+) -> jnp.ndarray:
+    if feature_source == "topk":
+        return model.extract_features(audio)
+    if feature_source == "context":
         frames = model.waveform_encoder(audio)
         return model.context_encoder(frames, inference=True)
-
-    return jax.vmap(_single)(audio_batch)
-
-
-@eqx.filter_jit
-def _project_frames(model: WavLeJEPA, frames: jnp.ndarray) -> jnp.ndarray:
-    return jax.vmap(lambda seq: jax.vmap(model.projector)(seq))(frames)
+    raise ValueError(f"Unsupported feature_source: {feature_source}")
 
 
 def _load_model(checkpoint_path: Path) -> WavLeJEPA:
@@ -93,24 +84,19 @@ def _collect_samples(
         audio_batch = jnp.array(np.stack(audio))
         lengths = np.asarray(lengths, dtype=np.int32)
 
-        if feature_source == "topk":
-            frames = _extract_topk(model, audio_batch)
-        elif feature_source == "context":
-            frames = _extract_context(model, audio_batch)
-        else:
-            raise ValueError(f"Unsupported feature_source: {feature_source}")
-
-        if project:
-            frames = _project_frames(model, frames)
-
-        frames = np.array(frames)
         for j, length in enumerate(lengths):
+            frames = _extract_single_frames(model, audio_batch[j], feature_source)
+            frames = np.array(frames)
             valid_frames = int(model.waveform_encoder.output_length(length))
-            valid_frames = max(1, min(valid_frames, frames.shape[1]))
-            file_frames = frames[j, :valid_frames]
+            valid_frames = max(1, min(valid_frames, frames.shape[0]))
+            file_frames = frames[:valid_frames]
             if frames_per_file < valid_frames:
                 idx = rng.choice(valid_frames, size=frames_per_file, replace=False)
                 file_frames = file_frames[idx]
+            if project:
+                file_frames = np.array(
+                    jax.vmap(model.projector)(jnp.array(file_frames))
+                )
             all_frames.append(file_frames)
             file_ids.append(np.full(file_frames.shape[0], start + j, dtype=np.int32))
 
