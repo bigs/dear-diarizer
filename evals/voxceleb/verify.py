@@ -40,6 +40,8 @@ def _load_cache(
     checkpoint: Path,
     sample_rate: int,
     max_duration: float,
+    pooling: str,
+    feature_source: str,
 ) -> np.ndarray | None:
     manifest_path = _manifest_path(cache_dir)
     embeddings_path = _embeddings_path(cache_dir)
@@ -54,6 +56,10 @@ def _load_cache(
     if manifest.get("sample_rate") != sample_rate:
         return None
     if manifest.get("max_duration") != max_duration:
+        return None
+    if manifest.get("pooling") != pooling:
+        return None
+    if manifest.get("feature_source") != feature_source:
         return None
 
     cached_files = [Path(p) for p in manifest.get("files", [])]
@@ -85,10 +91,20 @@ def _extract_or_load_embeddings(
     sample_rate: int,
     max_duration: float,
     batch_size: int,
+    pooling: str,
+    feature_source: str,
     force: bool,
 ) -> np.ndarray:
     if not force:
-        cached = _load_cache(cache_dir, files, checkpoint, sample_rate, max_duration)
+        cached = _load_cache(
+            cache_dir,
+            files,
+            checkpoint,
+            sample_rate,
+            max_duration,
+            pooling,
+            feature_source,
+        )
         if cached is not None:
             print(f"Loaded cached embeddings from {cache_dir}")
             return cached
@@ -100,6 +116,8 @@ def _extract_or_load_embeddings(
         batch_size=batch_size,
         sample_rate=sample_rate,
         max_duration=max_duration,
+        pooling=pooling,
+        feature_source=feature_source,
     )
 
     _save_cache(
@@ -111,6 +129,8 @@ def _extract_or_load_embeddings(
             "sample_rate": sample_rate,
             "max_duration": max_duration,
             "batch_size": batch_size,
+            "pooling": pooling,
+            "feature_source": feature_source,
         },
     )
     return embeddings
@@ -136,6 +156,20 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--sample-rate", type=int, default=16000)
     parser.add_argument("--max-duration", type=float, default=10.0)
+    parser.add_argument(
+        "--pooling",
+        type=str,
+        default="mean",
+        choices=["mean", "meanstd"],
+        help="Frame pooling strategy.",
+    )
+    parser.add_argument(
+        "--feature-source",
+        type=str,
+        default="topk",
+        choices=["topk", "context"],
+        help="Frame feature source.",
+    )
     parser.add_argument(
         "--cache-dir",
         type=Path,
@@ -180,6 +214,8 @@ def main() -> None:
         sample_rate=args.sample_rate,
         max_duration=args.max_duration,
         batch_size=args.batch_size,
+        pooling=args.pooling,
+        feature_source=args.feature_source,
         force=args.force_recompute,
     )
 
@@ -219,6 +255,8 @@ def main() -> None:
             "max_duration": args.max_duration,
             "batch_size": args.batch_size,
             "cache_dir": str(args.cache_dir),
+            "pooling": args.pooling,
+            "feature_source": args.feature_source,
         },
         "results": results,
     }

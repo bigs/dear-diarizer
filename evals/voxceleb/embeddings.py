@@ -49,26 +49,52 @@ def load_audio_padded(
     return audio.astype(np.float32), original_length
 
 
-def _extract_single_embedding(
+def _extract_frame_features(
     model: WavLeJEPA,
     audio: jnp.ndarray,
-    sample_length: jnp.ndarray,
+    feature_source: str,
 ) -> jnp.ndarray:
-    """Extract utterance embedding from single audio (for vmap).
+    if feature_source == "topk":
+        return model.extract_features(audio)  # [frames, 768]
+    if feature_source == "context":
+        frame_embeddings = model.waveform_encoder(audio)  # [frames, 768]
+        return model.context_encoder(frame_embeddings, inference=True)  # [frames, 768]
+    raise ValueError(f"Unsupported feature_source: {feature_source}")
 
-    Uses the model's recommended Top-K extraction and length-aware pooling
-    to avoid padding bias.
-    """
-    frame_embeddings = model.extract_features(audio)  # [frames, 768]
+
+def _pool_frames(
+    frame_embeddings: jnp.ndarray,
+    valid_frames: jnp.ndarray,
+    pooling: str,
+) -> jnp.ndarray:
     total_frames = frame_embeddings.shape[0]
-
-    # Length-aware pooling to avoid padding bias
-    valid_frames = model.waveform_encoder.output_length(sample_length)
     valid_frames = jnp.clip(valid_frames, 1, total_frames)
     mask = (jnp.arange(total_frames) < valid_frames).astype(frame_embeddings.dtype)
     masked = frame_embeddings * mask[:, None]
     denom = jnp.maximum(valid_frames, 1).astype(frame_embeddings.dtype)
-    return jnp.sum(masked, axis=0) / denom
+
+    mean = jnp.sum(masked, axis=0) / denom
+    if pooling == "mean":
+        return mean
+    if pooling == "meanstd":
+        mean_sq = jnp.sum(masked * masked, axis=0) / denom
+        var = jnp.maximum(mean_sq - mean * mean, 0.0)
+        std = jnp.sqrt(var + 1e-6)
+        return jnp.concatenate([mean, std], axis=0)
+    raise ValueError(f"Unsupported pooling: {pooling}")
+
+
+def _extract_single_embedding(
+    model: WavLeJEPA,
+    audio: jnp.ndarray,
+    sample_length: jnp.ndarray,
+    pooling: str,
+    feature_source: str,
+) -> jnp.ndarray:
+    """Extract utterance embedding from single audio (for vmap)."""
+    frame_embeddings = _extract_frame_features(model, audio, feature_source)
+    valid_frames = model.waveform_encoder.output_length(sample_length)
+    return _pool_frames(frame_embeddings, valid_frames, pooling)
 
 
 @eqx.filter_jit
@@ -76,6 +102,8 @@ def extract_batch_embeddings(
     model: WavLeJEPA,
     audio_batch: jnp.ndarray,
     lengths: jnp.ndarray,
+    pooling: str = "mean",
+    feature_source: str = "topk",
 ) -> jnp.ndarray:
     """Extract embeddings for a batch of audio.
 
@@ -83,13 +111,17 @@ def extract_batch_embeddings(
         model: Frozen WavLeJEPA model
         audio_batch: Batch of audio waveforms [B, T] (fixed length)
         lengths: Original (unpadded) lengths in samples [B]
+        pooling: Pooling strategy ("mean" or "meanstd")
+        feature_source: Feature source ("topk" or "context")
 
     Returns:
         Batch of embeddings [B, 768]
     """
     # vmap over the batch dimension
     batched_extract = jax.vmap(
-        lambda audio, length: _extract_single_embedding(model, audio, length)
+        lambda audio, length: _extract_single_embedding(
+            model, audio, length, pooling, feature_source
+        )
     )
     return batched_extract(audio_batch, lengths)
 
@@ -100,6 +132,8 @@ def extract_embeddings(
     batch_size: int = 32,
     sample_rate: int = 16000,
     max_duration: float = 10.0,
+    pooling: str = "mean",
+    feature_source: str = "topk",
 ) -> np.ndarray:
     """Extract embeddings for a list of audio files.
 
@@ -109,11 +143,18 @@ def extract_embeddings(
         batch_size: Batch size (currently processes sequentially)
         sample_rate: Audio sample rate
         max_duration: Maximum audio duration in seconds (crops longer files)
+        pooling: Pooling strategy ("mean" or "meanstd")
+        feature_source: Feature source ("topk" or "context")
 
     Returns:
         Embeddings array [num_utterances, 768]
     """
     checkpoint_path = Path(checkpoint_path)
+
+    if pooling not in {"mean", "meanstd"}:
+        raise ValueError(f"Unsupported pooling: {pooling}")
+    if feature_source not in {"topk", "context"}:
+        raise ValueError(f"Unsupported feature_source: {feature_source}")
 
     # Load configs
     training_config_path = checkpoint_path / "training_config.json"
@@ -167,7 +208,13 @@ def extract_embeddings(
         batch = jnp.array(all_audio[start_idx:end_idx])
         lengths = jnp.array(all_lengths[start_idx:end_idx])
 
-        batch_emb = extract_batch_embeddings(model, batch, lengths)
+        batch_emb = extract_batch_embeddings(
+            model,
+            batch,
+            lengths,
+            pooling=pooling,
+            feature_source=feature_source,
+        )
         embeddings.append(np.array(batch_emb))
 
         if i == 0:
