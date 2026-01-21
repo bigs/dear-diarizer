@@ -24,7 +24,7 @@ def load_audio_padded(
     path: Path,
     sample_rate: int = 16000,
     max_duration: float = 10.0,
-) -> np.ndarray:
+) -> tuple[np.ndarray, int]:
     """Load audio file and pad/crop to fixed length.
 
     Args:
@@ -33,10 +33,11 @@ def load_audio_padded(
         max_duration: Fixed duration in seconds (pads shorter, crops longer)
 
     Returns:
-        Audio waveform as numpy array with fixed length
+        Tuple of (audio waveform with fixed length, original sample length)
     """
     target_length = int(sample_rate * max_duration)
     audio, _ = librosa.load(path, sr=sample_rate, mono=True, duration=max_duration)
+    original_length = len(audio)
 
     # Pad if shorter than target
     if len(audio) < target_length:
@@ -45,36 +46,52 @@ def load_audio_padded(
     elif len(audio) > target_length:
         audio = audio[:target_length]
 
-    return audio.astype(np.float32)
+    return audio.astype(np.float32), original_length
 
 
 def _extract_single_embedding(
     model: WavLeJEPA,
     audio: jnp.ndarray,
+    sample_length: jnp.ndarray,
 ) -> jnp.ndarray:
-    """Extract utterance embedding from single audio (for vmap)."""
-    frame_embeddings = model.waveform_encoder(audio)  # [N, 768]
-    contextualized = model.context_encoder(frame_embeddings)  # [N, 768]
-    return jnp.mean(contextualized, axis=0)  # [768]
+    """Extract utterance embedding from single audio (for vmap).
+
+    Uses the model's recommended Top-K extraction and length-aware pooling
+    to avoid padding bias.
+    """
+    frame_embeddings = model.extract_features(audio)  # [frames, 768]
+    total_frames = frame_embeddings.shape[0]
+
+    # Length-aware pooling to avoid padding bias
+    valid_frames = model.waveform_encoder.output_length(sample_length)
+    valid_frames = jnp.clip(valid_frames, 1, total_frames)
+    mask = (jnp.arange(total_frames) < valid_frames).astype(frame_embeddings.dtype)
+    masked = frame_embeddings * mask[:, None]
+    denom = jnp.maximum(valid_frames, 1).astype(frame_embeddings.dtype)
+    return jnp.sum(masked, axis=0) / denom
 
 
 @eqx.filter_jit
 def extract_batch_embeddings(
     model: WavLeJEPA,
     audio_batch: jnp.ndarray,
+    lengths: jnp.ndarray,
 ) -> jnp.ndarray:
     """Extract embeddings for a batch of audio.
 
     Args:
         model: Frozen WavLeJEPA model
         audio_batch: Batch of audio waveforms [B, T] (fixed length)
+        lengths: Original (unpadded) lengths in samples [B]
 
     Returns:
         Batch of embeddings [B, 768]
     """
     # vmap over the batch dimension
-    batched_extract = jax.vmap(lambda audio: _extract_single_embedding(model, audio))
-    return batched_extract(audio_batch)
+    batched_extract = jax.vmap(
+        lambda audio, length: _extract_single_embedding(model, audio, length)
+    )
+    return batched_extract(audio_batch, lengths)
 
 
 def extract_embeddings(
@@ -127,10 +144,15 @@ def extract_embeddings(
     # Load all audio with fixed length (enables batching)
     print(f"Loading {len(audio_paths)} audio files...")
     all_audio = []
+    all_lengths = []
     for audio_path in tqdm(audio_paths, desc="Loading audio"):
-        audio = load_audio_padded(audio_path, sample_rate=sample_rate, max_duration=max_duration)
+        audio, length = load_audio_padded(
+            audio_path, sample_rate=sample_rate, max_duration=max_duration
+        )
         all_audio.append(audio)
+        all_lengths.append(length)
     all_audio = np.stack(all_audio)  # [N, T]
+    all_lengths = np.asarray(all_lengths, dtype=np.int32)  # [N]
     print(f"Audio loaded: {all_audio.shape}")
 
     # Extract embeddings in batches
@@ -143,8 +165,9 @@ def extract_embeddings(
         start_idx = i * batch_size
         end_idx = min(start_idx + batch_size, len(all_audio))
         batch = jnp.array(all_audio[start_idx:end_idx])
+        lengths = jnp.array(all_lengths[start_idx:end_idx])
 
-        batch_emb = extract_batch_embeddings(model, batch)
+        batch_emb = extract_batch_embeddings(model, batch, lengths)
         embeddings.append(np.array(batch_emb))
 
         if i == 0:
