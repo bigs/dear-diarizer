@@ -9,6 +9,7 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import equinox as eqx
 import numpy as np
 
 from wavlejepa.model import WavLeJEPA, WavLeJEPAConfig
@@ -18,12 +19,12 @@ from wavlejepa.training.config import TrainingConfig
 from .embeddings import load_audio_padded
 
 
-@jax.jit
+@eqx.filter_jit
 def _extract_topk(model: WavLeJEPA, audio_batch: jnp.ndarray) -> jnp.ndarray:
     return jax.vmap(lambda audio: model.extract_features(audio))(audio_batch)
 
 
-@jax.jit
+@eqx.filter_jit
 def _extract_context(model: WavLeJEPA, audio_batch: jnp.ndarray) -> jnp.ndarray:
     def _single(audio: jnp.ndarray) -> jnp.ndarray:
         frames = model.waveform_encoder(audio)
@@ -32,7 +33,7 @@ def _extract_context(model: WavLeJEPA, audio_batch: jnp.ndarray) -> jnp.ndarray:
     return jax.vmap(_single)(audio_batch)
 
 
-@jax.jit
+@eqx.filter_jit
 def _project_frames(model: WavLeJEPA, frames: jnp.ndarray) -> jnp.ndarray:
     return jax.vmap(lambda seq: jax.vmap(model.projector)(seq))(frames)
 
