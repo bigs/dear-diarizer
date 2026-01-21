@@ -151,6 +151,11 @@ def main() -> None:
         type=Path,
         default=Path("results/voxceleb_verif.json"),
     )
+    parser.add_argument(
+        "--debug-stats",
+        action="store_true",
+        help="Print basic score/embedding statistics for sanity checking.",
+    )
 
     args = parser.parse_args()
 
@@ -184,6 +189,19 @@ def main() -> None:
     labels = _labels_from_trials(trials)
     scores = cosine_scores(embeddings, file_index, trials)
     eer, threshold = compute_eer(labels, scores)
+
+    if args.debug_stats:
+        pos_scores = scores[labels == 1]
+        neg_scores = scores[labels == 0]
+        emb_mean = embeddings.mean(axis=0)
+        emb_std = embeddings.std(axis=0)
+        print()
+        print("Debug stats")
+        print("-" * 80)
+        print(f"Pos scores: mean={pos_scores.mean():.4f} std={pos_scores.std():.4f}")
+        print(f"Neg scores: mean={neg_scores.mean():.4f} std={neg_scores.std():.4f}")
+        print(f"Embedding std (mean over dims): {emb_std.mean():.6f}")
+        print(f"Embedding mean norm: {np.linalg.norm(emb_mean):.6f}")
 
     results = {
         "eer": eer,

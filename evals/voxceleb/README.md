@@ -27,6 +27,7 @@ python -m evals.voxceleb.verify \
   --trials /path/to/veri_test.txt \
   --batch-size 32 \
   --max-duration 10.0 \
+  --debug-stats \
   --output results/voxceleb_verif.json
 ```
 
