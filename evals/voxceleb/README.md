@@ -37,3 +37,16 @@ Notes:
 - `--trials` should point to the official VoxCeleb1 verification list.
 - Embeddings are cached under `results/voxceleb_verif_cache` by default; pass
   `--force-recompute` to ignore the cache.
+
+## Combined Verification + Collapse Summary
+
+```bash
+python -m evals.voxceleb.compare \
+  --checkpoint checkpoints-batch128-conservative \
+  --voxceleb-root /path/to/voxceleb1/wav \
+  --trials /path/to/veri_test.txt \
+  --pooling meanstd \
+  --feature-source context \
+  --collapse-include-project \
+  --output results/voxceleb_compare.json
+```
