@@ -6,7 +6,11 @@ Uses WebDataset to stream audio from object storage (S3/GCS/local).
 
 import io
 import os
+import queue
 import sys
+import threading
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Callable
@@ -53,6 +57,7 @@ class DataConfig:
 
     # Workers
     num_workers: int = 4
+    prefetch_batches: int = 2
 
 
 def load_audio_from_bytes(
@@ -112,25 +117,119 @@ def random_crop_np(
     return audio[start : start + crop_samples]
 
 
+_THREAD_LOCAL = threading.local()
+
+
+def _get_thread_rng(seed: int) -> np.random.Generator:
+    """Get a per-thread RNG seeded for the current epoch."""
+    rng = getattr(_THREAD_LOCAL, "rng", None)
+    if rng is None or getattr(_THREAD_LOCAL, "seed", None) != seed:
+        thread_id = threading.get_ident() & 0xFFFFFFFF
+        _THREAD_LOCAL.rng = np.random.default_rng((seed + thread_id) % (2**32))
+        _THREAD_LOCAL.seed = seed
+    return _THREAD_LOCAL.rng
+
+
+def _parallel_map(
+    fn: Callable[[dict], dict],
+    iterable: Iterator[dict],
+    num_workers: int,
+    max_queue: int | None = None,
+) -> Iterator[dict]:
+    if num_workers <= 1:
+        yield from map(fn, iterable)
+        return
+
+    if max_queue is None:
+        max_queue = num_workers * 2
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        it = iter(iterable)
+        futures = deque()
+
+        for _ in range(max_queue):
+            try:
+                item = next(it)
+            except StopIteration:
+                break
+            futures.append(executor.submit(fn, item))
+
+        while futures:
+            future = futures.popleft()
+            yield future.result()
+            try:
+                item = next(it)
+            except StopIteration:
+                continue
+            futures.append(executor.submit(fn, item))
+
+
+def _prefetch_iterator(
+    iterable: Iterator[np.ndarray],
+    max_prefetch: int,
+) -> Iterator[np.ndarray]:
+    if max_prefetch <= 0:
+        yield from iterable
+        return
+
+    q: queue.Queue[object] = queue.Queue(maxsize=max_prefetch)
+    sentinel = object()
+    error: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            for item in iterable:
+                q.put(item)
+        except BaseException as exc:
+            error.append(exc)
+        finally:
+            q.put(sentinel)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    while True:
+        item = q.get()
+        if item is sentinel:
+            break
+        yield item
+
+    if error:
+        raise error[0]
+
+
+def _batch_samples(
+    samples: Iterator[dict],
+    batch_size: int,
+) -> Iterator[np.ndarray]:
+    batch: list[np.ndarray] = []
+    for sample in samples:
+        batch.append(sample["audio"])
+        if len(batch) >= batch_size:
+            batch_array = np.stack(batch[:batch_size])
+            yield batch_array
+            batch = batch[batch_size:]
+
+
 def create_dataset(
     config: DataConfig,
     seed: int = 42,
-) -> wds.WebDataset:
+) -> Iterator[dict]:
     """
-    Create a WebDataset pipeline for audio.
+    Create an iterator of processed audio samples.
 
     Args:
         config: Data configuration
-        seed: Random seed for shuffling
+        seed: Random seed for shuffling/cropping
 
     Returns:
-        WebDataset that yields processed audio samples
+        Iterator that yields processed audio samples
     """
     crop_samples = int(config.crop_duration * config.sample_rate)
-    rng = np.random.default_rng(seed)
 
     def process_sample(sample: dict) -> dict:
         """Process a single sample from the tar."""
+        rng = _get_thread_rng(seed)
         # Check for pre-decoded tensor first (fast path)
         if "npy" in sample:
             audio = np.load(io.BytesIO(sample["npy"]))
@@ -164,10 +263,12 @@ def create_dataset(
     dataset = (
         wds.WebDataset(config.shards_path, shardshuffle=100)
         .shuffle(config.shuffle_buffer)
-        .map(process_sample)
     )
 
-    return dataset
+    if config.num_workers > 1:
+        return _parallel_map(process_sample, dataset, config.num_workers)
+
+    return map(process_sample, dataset)
 
 
 def create_dataloader(
@@ -184,18 +285,12 @@ def create_dataloader(
     Yields:
         Batched audio arrays of shape (batch_size, crop_samples)
     """
-    dataset = create_dataset(config, seed)
-    crop_samples = int(config.crop_duration * config.sample_rate)
+    samples = create_dataset(config, seed)
+    batch_iter = _batch_samples(samples, config.batch_size)
+    batch_iter = _prefetch_iterator(batch_iter, config.prefetch_batches)
 
-    batch = []
-    for sample in dataset:
-        batch.append(sample["audio"])
-
-        if len(batch) >= config.batch_size:
-            # Stack and convert to JAX
-            batch_array = np.stack(batch[: config.batch_size])
-            yield jnp.array(batch_array)
-            batch = batch[config.batch_size :]
+    for batch_array in batch_iter:
+        yield jnp.array(batch_array)
 
 
 class AudioDataLoader:
@@ -220,16 +315,12 @@ class AudioDataLoader:
         epoch = 0
         while True:
             # Create fresh dataset each epoch (for proper reshuffling)
-            dataset = create_dataset(self.config, seed=self.seed + epoch)
+            samples = create_dataset(self.config, seed=self.seed + epoch)
+            batch_iter = _batch_samples(samples, self.config.batch_size)
+            batch_iter = _prefetch_iterator(batch_iter, self.config.prefetch_batches)
 
-            batch = []
-            for sample in dataset:
-                batch.append(sample["audio"])
-
-                if len(batch) >= self.config.batch_size:
-                    batch_array = np.stack(batch[: self.config.batch_size])
-                    yield jnp.array(batch_array)
-                    batch = batch[self.config.batch_size :]
+            for batch_array in batch_iter:
+                yield jnp.array(batch_array)
 
             epoch += 1
             if not self.infinite:

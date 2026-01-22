@@ -127,6 +127,8 @@ def main(
             crop_duration=config.data.crop_duration,
             batch_size=global_batch_size,
             shuffle_buffer=1000,
+            num_workers=config.data.num_workers,
+            prefetch_batches=config.data.prefetch_batches,
         )
         data_loader = iter(AudioDataLoader(data_config, seed=config.seed, infinite=True))
 

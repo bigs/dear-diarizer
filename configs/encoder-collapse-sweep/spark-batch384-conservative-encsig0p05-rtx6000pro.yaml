@@ -21,6 +21,8 @@ data:
   batch_size: 384
   sample_rate: 16000
   crop_duration: 2.0
+  num_workers: 8
+  prefetch_batches: 4
 
 checkpoint:
   checkpoint_dir: checkpoints-batch384-conservative-encsig0p05-rtx6000pro

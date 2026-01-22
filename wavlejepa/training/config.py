@@ -60,6 +60,7 @@ class DataConfig:
     crop_duration: float = 2.0  # seconds
     sample_rate: int = 16000
     num_workers: int = 4
+    prefetch_batches: int = 2
 
 
 @dataclass(frozen=True)
