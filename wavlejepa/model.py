@@ -61,6 +61,34 @@ def _expand_block_starts(
     return mask
 
 
+def _num_blocks_for_ratio(seq_len: int, target_ratio: float, block_length: int) -> int:
+    """
+    Compute number of blocks needed to achieve target coverage ratio.
+
+    With random block placement, blocks overlap. Expected coverage is:
+        coverage = 1 - (1 - M/N)^k
+    where M=block_length, N=seq_len, k=num_blocks.
+
+    Solving for k: k = log(1 - ratio) / log(1 - M/N)
+    """
+    import math
+
+    if seq_len <= 0 or block_length <= 0:
+        return 1
+
+    p = block_length / seq_len
+    if p >= 1.0:
+        return 1
+
+    # Clamp target_ratio to avoid log(0)
+    ratio = min(target_ratio, 0.99)
+    if ratio <= 0:
+        return 1
+
+    num_blocks = math.log(1 - ratio) / math.log(1 - p)
+    return max(1, int(math.ceil(num_blocks)))
+
+
 def sample_context_mask(
     seq_len: int,
     config: MaskingConfig,
@@ -79,13 +107,13 @@ def sample_context_mask(
     Returns:
         context_mask: Boolean mask [seq_len] where True = context position
     """
-    target_frames = int(seq_len * config.context_ratio)
-    num_blocks = max(1, target_frames // config.context_block_length)
+    num_blocks = _num_blocks_for_ratio(
+        seq_len, config.context_ratio, config.context_block_length
+    )
 
     # Sample num_blocks random start positions (without replacement)
     # Use top-k of random values for differentiable selection
     rand_vals = jax.random.uniform(key, (seq_len,))
-    # Get top num_blocks positions
     _, top_indices = jax.lax.top_k(rand_vals, num_blocks)
 
     # Create starts mask from selected indices
@@ -116,8 +144,11 @@ def sample_target_mask(
     Returns:
         target_mask: Boolean mask [seq_len] where True = target position
     """
-    target_frames = int(seq_len * config.target_ratio)
-    num_blocks = max(1, target_frames // config.target_block_length)
+    # Compute blocks needed based on full sequence length
+    # (context exclusion happens after block expansion)
+    num_blocks = _num_blocks_for_ratio(
+        seq_len, config.target_ratio, config.target_block_length
+    )
 
     # Sample from non-context positions only
     # Set context positions to -inf so they're never selected
@@ -338,7 +369,7 @@ class WavLeJEPA(eqx.Module):
             - num_context: Number of valid context positions
             - num_targets: Number of valid target positions
         """
-        key1, key2, key3, key4 = jax.random.split(key, 4)
+        key1, key2, key3 = jax.random.split(key, 3)
 
         # 1. Extract waveform features
         features = self.waveform_encoder(waveform)  # [N, 768]
@@ -361,7 +392,7 @@ class WavLeJEPA(eqx.Module):
         context_output = self.context_encoder.forward_with_top_k(
             features,
             context_mask=context_mask,
-            key=key4,
+            key=key1,
             inference=False,
         )
         # Gather context at positions (fixed size array)
