@@ -541,12 +541,23 @@ class WavLeJEPA(eqx.Module):
         # Average over groups
         avg_inv_loss = total_inv_loss / num_groups
 
+        # 8. Gather encoder embeddings at ALL target positions (union of groups) for SIGReg
+        # SIGReg regularizes the encoder output distribution - it doesn't need per-group separation
+        # Compute union of target masks: any position that's a target in ANY group
+        all_targets_mask = jnp.any(target_masks, axis=0)  # [seq_len]
+        all_target_positions, num_all_targets = mask_to_indices(all_targets_mask, seq_len)
+        all_target_positions = jnp.where(all_target_positions >= 0, all_target_positions, 0)
+        # Gather: [num_all_targets, 768] - NOT [groups, seq, 768]
+        all_target_embeddings = full_output[all_target_positions]
+
         return {
             "invariance_loss": avg_inv_loss,  # Scalar - no memory explosion!
             "context_embeddings": context_at_positions,
+            "target_embeddings": all_target_embeddings,  # Union of all target positions
             "context_mask": context_mask,
             "target_masks": target_masks,
             "num_context": num_context,
+            "num_targets": num_all_targets,  # Total targets across all groups
             "num_targets_per_group": num_targets_per_group,
         }
 
