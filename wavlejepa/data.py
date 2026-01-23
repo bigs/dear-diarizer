@@ -175,6 +175,56 @@ def _parallel_map(
             futures.append(executor.submit(fn, item))
 
 
+def _parallel_flatmap(
+    fn: Callable[[dict], list[dict]],
+    iterable: Iterator[dict],
+    num_workers: int,
+    max_inflight: int | None = None,
+) -> Iterator[dict]:
+    """
+    Parallel flat-map: each worker returns multiple outputs per input.
+
+    Uses as_completed to avoid head-of-line blocking from slow decodes.
+    """
+    from concurrent.futures import as_completed
+
+    if num_workers <= 1:
+        for item in iterable:
+            yield from fn(item)
+        return
+
+    if max_inflight is None:
+        max_inflight = num_workers * 4
+
+    it = iter(iterable)
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        inflight: set = set()
+
+        def submit_one() -> bool:
+            try:
+                item = next(it)
+            except StopIteration:
+                return False
+            inflight.add(executor.submit(fn, item))
+            return True
+
+        # Prime the pool
+        for _ in range(max_inflight):
+            if not submit_one():
+                break
+
+        while inflight:
+            # Wait for any future to complete
+            done = next(iter(as_completed(inflight)))
+            inflight.discard(done)
+            # Yield all crops from the completed file
+            for crop in done.result():
+                yield crop
+            # Refill
+            submit_one()
+
+
 def _prefetch_iterator(
     iterable: Iterator[np.ndarray],
     max_prefetch: int,
@@ -283,62 +333,70 @@ def _create_webdataset(
     Returns:
         Iterator that yields processed audio samples
     """
-    crop_samples = int(config.crop_duration * config.sample_rate)
-    multi_crop = config.crops_per_audio > 1
+    import math
 
-    def process_sample(sample: dict) -> dict:
-        """Process a single sample from the tar."""
-        rng = _get_thread_rng(seed)
+    crop_samples = int(config.crop_duration * config.sample_rate)
+    crops_per_audio = config.crops_per_audio
+
+    def process_sample(sample: dict) -> list[dict]:
+        """Decode audio and extract all crops in worker thread."""
+        key = sample.get("__key__", "")
+
         # Check for pre-decoded tensor first (fast path)
         if "npy" in sample:
             audio = np.load(io.BytesIO(sample["npy"]))
-            if multi_crop:
-                # Return full audio for later crop expansion
-                return {"audio_full": audio, "__key__": sample.get("__key__", "")}
-            # Still need random crop since chunks are typically 30s
-            audio = random_crop_np(audio, crop_samples, rng)
-            return {"audio": audio, "__key__": sample.get("__key__", "")}
+        else:
+            # Fall back to MP3/audio decoding (backward compatible)
+            audio_extensions = ("mp3", "wav", "flac", "ogg", "m4a", "opus", "webm")
+            audio_key = None
+            for k in sample:
+                # Check both with and without dot (webdataset uses no dot)
+                if k in audio_extensions or k.lstrip(".") in audio_extensions:
+                    audio_key = k
+                    break
 
-        # Fall back to MP3/audio decoding (backward compatible)
-        audio_extensions = ("mp3", "wav", "flac", "ogg", "m4a", "opus", "webm")
-        audio_key = None
-        for key in sample:
-            # Check both with and without dot (webdataset uses no dot)
-            if key in audio_extensions or key.lstrip(".") in audio_extensions:
-                audio_key = key
-                break
+            if audio_key is None:
+                raise ValueError(f"No audio file found in sample: {list(sample.keys())}. Expected one of {audio_extensions} or 'npy'")
 
-        if audio_key is None:
-            raise ValueError(f"No audio file found in sample: {list(sample.keys())}. Expected one of {audio_extensions} or 'npy'")
+            # Load and process audio
+            audio = load_audio_from_bytes(
+                sample[audio_key],
+                sample_rate=config.sample_rate,
+            )
 
-        # Load and process audio
-        audio = load_audio_from_bytes(
-            sample[audio_key],
-            sample_rate=config.sample_rate,
-        )
+        if crops_per_audio <= 1:
+            # Single crop path
+            rng = np.random.default_rng((_stable_hash(key) ^ seed) & 0xFFFFFFFF)
+            crop = random_crop_np(audio, crop_samples, rng)
+            return [{"audio": crop, "__key__": key}]
 
-        if multi_crop:
-            # Return full audio for later crop expansion
-            return {"audio_full": audio, "__key__": sample.get("__key__", "")}
-
-        # Random crop
-        audio = random_crop_np(audio, crop_samples, rng)
-
-        return {"audio": audio, "__key__": sample.get("__key__", "")}
+        # Multi-crop: extract all crops in this worker thread
+        # Deterministic per-audio seed for reproducibility
+        base_seed = (_stable_hash(key) ^ seed) & 0xFFFFFFFF
+        crops = []
+        for i in range(crops_per_audio):
+            rng = np.random.default_rng((base_seed + i) & 0xFFFFFFFF)
+            crop = random_crop_np(audio, crop_samples, rng)
+            crops.append({"audio": crop, "__key__": f"{key}_crop{i}"})
+        return crops
 
     dataset = (
         wds.WebDataset(config.shards_path, shardshuffle=100)
         .shuffle(config.shuffle_buffer)
     )
 
-    if config.num_workers > 1:
-        samples = _parallel_map(process_sample, dataset, config.num_workers)
-    else:
-        samples = map(process_sample, dataset)
+    # Size inflight work based on files-per-batch to keep GPU fed
+    files_per_batch = math.ceil(config.batch_size / max(crops_per_audio, 1))
+    max_inflight = max(config.num_workers * 4, files_per_batch * 2)
 
-    # Expand each audio into multiple crops if configured
-    if multi_crop:
-        samples = _expand_crops(samples, config.crops_per_audio, crop_samples, seed)
+    if config.num_workers > 1:
+        samples = _parallel_flatmap(process_sample, dataset, config.num_workers, max_inflight)
+    else:
+        # Sequential fallback: flat-map without parallelism
+        def _sequential_flatmap():
+            for item in dataset:
+                yield from process_sample(item)
+        samples = _sequential_flatmap()
 
     return samples
 
@@ -359,10 +417,11 @@ def _create_hf_dataset(
     Returns:
         Iterator that yields processed audio samples
     """
+    import math
     from datasets import load_dataset, Audio, Features, Value, Sequence
 
     crop_samples = int(config.crop_duration * config.sample_rate)
-    multi_crop = config.crops_per_audio > 1
+    crops_per_audio = config.crops_per_audio
 
     # Known dataset schemas with audio decoding disabled
     # This avoids the torchcodec dependency by getting raw bytes
@@ -396,10 +455,8 @@ def _create_hf_dataset(
     # Shuffle with buffer
     ds = ds.shuffle(seed=seed, buffer_size=config.shuffle_buffer)
 
-    def process_hf_sample(sample: dict) -> dict:
-        """Process a single sample from HuggingFace."""
-        rng = _get_thread_rng(seed)
-
+    def process_hf_sample(sample: dict) -> list[dict]:
+        """Decode audio and extract all crops in worker thread."""
         # Decode audio bytes (FLAC for AudioSet)
         audio_bytes = sample["audio"]["bytes"]
         audio = load_audio_from_bytes(
@@ -408,25 +465,50 @@ def _create_hf_dataset(
         )
 
         # Use video_id as key (AudioSet-specific, fallback to generic)
-        key = sample.get("video_id", sample.get("id", ""))
+        # Explicit None/"" check to handle falsy but valid IDs like 0
+        key = sample.get("video_id")
+        if key is None or key == "":
+            key = sample.get("id")
+        if key is None or key == "":
+            key = ""
 
-        if multi_crop:
-            # Return full audio for later crop expansion
-            return {"audio_full": audio, "__key__": key}
+        # If no ID, use per-thread RNG (non-deterministic but avoids same-crop bias)
+        use_thread_rng = key == ""
+        key_str = str(key) if key != "" else "_anon"
 
-        # Random crop (AudioSet clips are 10s, we want 2s)
-        audio = random_crop_np(audio, crop_samples, rng)
+        if crops_per_audio <= 1:
+            if use_thread_rng:
+                rng = _get_thread_rng(seed)
+            else:
+                rng = np.random.default_rng((_stable_hash(key) ^ seed) & 0xFFFFFFFF)
+            crop = random_crop_np(audio, crop_samples, rng)
+            return [{"audio": crop, "__key__": key_str}]
 
-        return {"audio": audio, "__key__": key}
+        # Multi-crop: extract all crops in this worker thread
+        crops = []
+        for i in range(crops_per_audio):
+            if use_thread_rng:
+                rng = _get_thread_rng(seed)
+            else:
+                # Deterministic per-audio seed for reproducibility
+                rng = np.random.default_rng(((_stable_hash(key) ^ seed) + i) & 0xFFFFFFFF)
+            crop = random_crop_np(audio, crop_samples, rng)
+            crops.append({"audio": crop, "__key__": f"{key_str}_crop{i}"})
+        return crops
+
+    # Size inflight work based on files-per-batch to keep GPU fed
+    # With batch_size=384 and crops_per_audio=8, need 48 files per batch
+    files_per_batch = math.ceil(config.batch_size / max(crops_per_audio, 1))
+    max_inflight = max(config.num_workers * 4, files_per_batch * 2)
 
     if config.num_workers > 1:
-        samples = _parallel_map(process_hf_sample, ds, config.num_workers)
+        samples = _parallel_flatmap(process_hf_sample, ds, config.num_workers, max_inflight)
     else:
-        samples = map(process_hf_sample, ds)
-
-    # Expand each audio into multiple crops if configured
-    if multi_crop:
-        samples = _expand_crops(samples, config.crops_per_audio, crop_samples, seed)
+        # Sequential fallback: flat-map without parallelism
+        def _sequential_flatmap():
+            for item in ds:
+                yield from process_hf_sample(item)
+        samples = _sequential_flatmap()
 
     return samples
 
