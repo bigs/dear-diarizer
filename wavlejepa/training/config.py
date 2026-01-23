@@ -80,6 +80,22 @@ class PrecisionConfig:
 
 
 @dataclass(frozen=True)
+class MaskingConfigOverride:
+    """Masking configuration overrides for sweeps.
+
+    These override the defaults in model.MaskingConfig.
+    Only specify values you want to change from defaults.
+    """
+
+    context_ratio: Optional[float] = None
+    target_ratio: Optional[float] = None
+    context_block_length: Optional[int] = None
+    target_block_length: Optional[int] = None
+    num_target_groups: Optional[int] = None
+    min_context_ratio: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class TrainingConfig:
     """Complete training configuration."""
 
@@ -89,6 +105,7 @@ class TrainingConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     data: DataConfig = field(default_factory=DataConfig)
     precision: PrecisionConfig = field(default_factory=PrecisionConfig)
+    masking: MaskingConfigOverride = field(default_factory=MaskingConfigOverride)
 
     seed: int = 42
 
@@ -112,6 +129,12 @@ class TrainingConfig:
         loss_filtered = {
             k: v for k, v in loss_data.items() if k in LossConfig.__dataclass_fields__
         }
+        masking_data = data.get("masking", {})
+        masking_filtered = {
+            k: v
+            for k, v in masking_data.items()
+            if k in MaskingConfigOverride.__dataclass_fields__
+        }
 
         return cls(
             optimizer=OptimizerConfig(**data.get("optimizer", {})),
@@ -120,6 +143,7 @@ class TrainingConfig:
             logging=LoggingConfig(**data.get("logging", {})),
             data=DataConfig(**data.get("data", {})),
             precision=PrecisionConfig(**data.get("precision", {})),
+            masking=MaskingConfigOverride(**masking_filtered),
             seed=data.get("seed", 42),
         )
 
@@ -132,6 +156,12 @@ class TrainingConfig:
         loss_filtered = {
             k: v for k, v in loss_data.items() if k in LossConfig.__dataclass_fields__
         }
+        masking_data = data.get("masking", {})
+        masking_filtered = {
+            k: v
+            for k, v in masking_data.items()
+            if k in MaskingConfigOverride.__dataclass_fields__
+        }
 
         return cls(
             optimizer=OptimizerConfig(**data.get("optimizer", {})),
@@ -140,5 +170,6 @@ class TrainingConfig:
             logging=LoggingConfig(**data.get("logging", {})),
             data=DataConfig(**data.get("data", {})),
             precision=PrecisionConfig(**data.get("precision", {})),
+            masking=MaskingConfigOverride(**masking_filtered),
             seed=data.get("seed", 42),
         )

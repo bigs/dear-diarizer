@@ -17,6 +17,7 @@ from .config import (
     LoggingConfig,
     DataConfig,
     PrecisionConfig,
+    MaskingConfigOverride,
 )
 from .state import TrainState, create_train_state, create_optimizer, get_lr_at_step
 from .step import (
@@ -38,6 +39,7 @@ __all__ = [
     "LoggingConfig",
     "DataConfig",
     "PrecisionConfig",
+    "MaskingConfigOverride",
     # State
     "TrainState",
     "create_train_state",

@@ -1,0 +1,42 @@
+# WavLeJEPA masking sweep - 8 target groups
+# Tests more granular target decomposition than WavJEPA
+
+precision:
+  compute_dtype: bfloat16
+  loss_in_float32: true
+
+optimizer:
+  peak_lr: 1.5e-4
+  warmup_steps: 7500
+  total_steps: 50000
+  weight_decay: 0.04
+  grad_clip_norm: 1.0
+
+loss:
+  sigreg_weight: 0.02
+  num_slices: 256
+
+data:
+  batch_size: 128
+  sample_rate: 16000
+  crop_duration: 2.0
+
+masking:
+  context_ratio: 0.35
+  target_ratio: 0.28
+  context_block_length: 10
+  target_block_length: 10
+  num_target_groups: 8
+  min_context_ratio: 0.10
+
+checkpoint:
+  checkpoint_dir: checkpoints-masking-sweep-groups-8
+  save_every_n_steps: 2500
+  keep_n_checkpoints: 3
+
+logging:
+  project: wavlejepa
+  log_every_n_steps: 50
+  eval_every_n_steps: 500
+
+seed: 42

@@ -26,7 +26,7 @@ from typing import Optional
 import jax
 from tqdm import tqdm
 
-from .model import WavLeJEPAConfig
+from .model import WavLeJEPAConfig, MaskingConfig
 from .data import DataConfig, AudioDataLoader
 from .training import (
     TrainingConfig,
@@ -102,7 +102,24 @@ def main(
         config = TrainingConfig()
 
     if model_config is None:
-        model_config = WavLeJEPAConfig()
+        # Build masking config from overrides (if any)
+        masking_overrides = config.masking
+        masking_kwargs = {}
+        if masking_overrides.context_ratio is not None:
+            masking_kwargs["context_ratio"] = masking_overrides.context_ratio
+        if masking_overrides.target_ratio is not None:
+            masking_kwargs["target_ratio"] = masking_overrides.target_ratio
+        if masking_overrides.context_block_length is not None:
+            masking_kwargs["context_block_length"] = masking_overrides.context_block_length
+        if masking_overrides.target_block_length is not None:
+            masking_kwargs["target_block_length"] = masking_overrides.target_block_length
+        if masking_overrides.num_target_groups is not None:
+            masking_kwargs["num_target_groups"] = masking_overrides.num_target_groups
+        if masking_overrides.min_context_ratio is not None:
+            masking_kwargs["min_context_ratio"] = masking_overrides.min_context_ratio
+
+        masking_config = MaskingConfig(**masking_kwargs) if masking_kwargs else None
+        model_config = WavLeJEPAConfig(masking=masking_config) if masking_config else WavLeJEPAConfig()
 
     # Initialize multi-GPU sharding
     sharding = init_sharding()
