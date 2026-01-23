@@ -419,6 +419,8 @@ def _create_hf_dataset(
     """
     import math
     from datasets import load_dataset, Audio, Features, Value, Sequence
+    import datasets
+    datasets.disable_progress_bars()
 
     crop_samples = int(config.crop_duration * config.sample_rate)
     crops_per_audio = config.crops_per_audio
