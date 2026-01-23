@@ -1,0 +1,45 @@
+# WavLeJEPA long run - 4 target groups, batch 384
+# Matches WavJEPA training scale: 400k steps, 100k warmup
+# LR scaled from WavJEPA's 2e-4 by sqrt(384/256) ≈ 1.22x
+
+precision:
+  compute_dtype: bfloat16
+  loss_in_float32: true
+
+optimizer:
+  peak_lr: 2.4e-4  # 2e-4 × sqrt(384/256)
+  warmup_steps: 100000
+  total_steps: 400000
+  weight_decay: 0.04
+  grad_clip_norm: 1.0
+
+loss:
+  sigreg_weight: 0.02
+  num_slices: 256
+
+data:
+  batch_size: 384
+  sample_rate: 16000
+  crop_duration: 2.0
+  num_workers: 8
+  prefetch_batches: 4
+
+masking:
+  context_ratio: 0.35
+  target_ratio: 0.28
+  context_block_length: 10
+  target_block_length: 10
+  num_target_groups: 4
+  min_context_ratio: 0.10
+
+checkpoint:
+  checkpoint_dir: checkpoints-long-run-groups-4-batch384
+  save_every_n_steps: 10000
+  keep_n_checkpoints: 5
+
+logging:
+  project: wavlejepa
+  log_every_n_steps: 100
+  eval_every_n_steps: 2000
+
+seed: 42

@@ -137,16 +137,38 @@ def main(
         print("Using dummy data (random noise)")
         data_loader = None
     else:
-        print(f"Loading data from: {shards_path}")
-        data_config = DataConfig(
-            shards_path=shards_path,
-            sample_rate=config.data.sample_rate,
-            crop_duration=config.data.crop_duration,
-            batch_size=global_batch_size,
-            shuffle_buffer=1000,
-            num_workers=config.data.num_workers,
-            prefetch_batches=config.data.prefetch_batches,
-        )
+        # Detect HuggingFace dataset path (hf://dataset/name or hf://dataset/name:subset)
+        if shards_path.startswith("hf://"):
+            hf_path = shards_path[5:]  # Remove "hf://" prefix
+            # Parse optional subset: "dataset/name:subset" -> ("dataset/name", "subset")
+            if ":" in hf_path:
+                hf_dataset, hf_subset = hf_path.rsplit(":", 1)
+            else:
+                hf_dataset = hf_path
+                hf_subset = "unbalanced"  # Default for AudioSet
+            print(f"Loading data from HuggingFace: {hf_dataset} (subset: {hf_subset})")
+            data_config = DataConfig(
+                hf_dataset=hf_dataset,
+                hf_subset=hf_subset,
+                sample_rate=config.data.sample_rate,
+                crop_duration=config.data.crop_duration,
+                batch_size=global_batch_size,
+                shuffle_buffer=1000,
+                num_workers=config.data.num_workers,
+                prefetch_batches=config.data.prefetch_batches,
+            )
+        else:
+            # WebDataset shards (local, s3://, gs://)
+            print(f"Loading data from: {shards_path}")
+            data_config = DataConfig(
+                shards_path=shards_path,
+                sample_rate=config.data.sample_rate,
+                crop_duration=config.data.crop_duration,
+                batch_size=global_batch_size,
+                shuffle_buffer=1000,
+                num_workers=config.data.num_workers,
+                prefetch_batches=config.data.prefetch_batches,
+            )
         data_loader = iter(AudioDataLoader(data_config, seed=config.seed, infinite=True))
 
     # Initialize checkpointer
@@ -305,7 +327,8 @@ if __name__ == "__main__":
         "--shards",
         type=str,
         default=None,
-        help="Path to WebDataset shards (e.g., 's3://bucket/train-{000..999}.tar')",
+        help="Data source: WebDataset shards (local/s3://bucket/train-{000..999}.tar) "
+             "or HuggingFace dataset (hf://agkphysics/AudioSet:unbalanced)",
     )
     parser.add_argument(
         "--dummy",

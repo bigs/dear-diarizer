@@ -43,9 +43,15 @@ def suppress_stderr():
 class DataConfig:
     """Data pipeline configuration."""
 
-    # Data source (supports s3://, gs://, or local paths)
+    # Data source - one of these must be specified:
+    # WebDataset: supports s3://, gs://, or local paths
     # Use brace expansion: "s3://bucket/shards-{000000..000999}.tar"
-    shards_path: str
+    shards_path: str | None = None
+
+    # HuggingFace datasets: e.g., "agkphysics/AudioSet"
+    hf_dataset: str | None = None
+    hf_subset: str = "unbalanced"  # Dataset config/subset
+    hf_split: str = "train"  # Dataset split
 
     # Audio parameters
     sample_rate: int = TARGET_SR  # 16kHz
@@ -211,12 +217,12 @@ def _batch_samples(
             batch = batch[batch_size:]
 
 
-def create_dataset(
+def _create_webdataset(
     config: DataConfig,
     seed: int = 42,
 ) -> Iterator[dict]:
     """
-    Create an iterator of processed audio samples.
+    Create an iterator of processed audio samples from WebDataset shards.
 
     Args:
         config: Data configuration
@@ -269,6 +275,107 @@ def create_dataset(
         return _parallel_map(process_sample, dataset, config.num_workers)
 
     return map(process_sample, dataset)
+
+
+def _create_hf_dataset(
+    config: DataConfig,
+    seed: int = 42,
+) -> Iterator[dict]:
+    """
+    Create an iterator of processed audio samples from HuggingFace datasets.
+
+    Streams audio from HF without downloading the full dataset.
+
+    Args:
+        config: Data configuration with hf_dataset specified
+        seed: Random seed for shuffling/cropping
+
+    Returns:
+        Iterator that yields processed audio samples
+    """
+    from datasets import load_dataset, Audio, Features, Value, Sequence
+
+    crop_samples = int(config.crop_duration * config.sample_rate)
+
+    # Known dataset schemas with audio decoding disabled
+    # This avoids the torchcodec dependency by getting raw bytes
+    KNOWN_FEATURES = {
+        "agkphysics/AudioSet": Features({
+            "video_id": Value("string"),
+            "audio": Audio(decode=False),
+            "labels": Sequence(Value("string")),
+            "human_labels": Sequence(Value("string")),
+        }),
+    }
+
+    features = KNOWN_FEATURES.get(config.hf_dataset)
+
+    # Load dataset in streaming mode
+    ds = load_dataset(
+        config.hf_dataset,
+        config.hf_subset,
+        split=config.hf_split,
+        streaming=True,
+        features=features,  # None for unknown datasets
+    )
+
+    # For unknown datasets, try to disable audio decoding via cast_column
+    if features is None:
+        try:
+            ds = ds.cast_column("audio", Audio(decode=False))
+        except (ValueError, KeyError):
+            pass  # Column doesn't exist or can't be cast
+
+    # Shuffle with buffer
+    ds = ds.shuffle(seed=seed, buffer_size=config.shuffle_buffer)
+
+    def process_hf_sample(sample: dict) -> dict:
+        """Process a single sample from HuggingFace."""
+        rng = _get_thread_rng(seed)
+
+        # Decode audio bytes (FLAC for AudioSet)
+        audio_bytes = sample["audio"]["bytes"]
+        audio = load_audio_from_bytes(
+            audio_bytes,
+            sample_rate=config.sample_rate,
+        )
+
+        # Random crop (AudioSet clips are 10s, we want 2s)
+        audio = random_crop_np(audio, crop_samples, rng)
+
+        # Use video_id as key (AudioSet-specific, fallback to generic)
+        key = sample.get("video_id", sample.get("id", ""))
+
+        return {"audio": audio, "__key__": key}
+
+    if config.num_workers > 1:
+        return _parallel_map(process_hf_sample, ds, config.num_workers)
+
+    return map(process_hf_sample, ds)
+
+
+def create_dataset(
+    config: DataConfig,
+    seed: int = 42,
+) -> Iterator[dict]:
+    """
+    Create an iterator of processed audio samples.
+
+    Dispatches to WebDataset or HuggingFace datasets based on config.
+
+    Args:
+        config: Data configuration
+        seed: Random seed for shuffling/cropping
+
+    Returns:
+        Iterator that yields processed audio samples
+    """
+    if config.hf_dataset:
+        return _create_hf_dataset(config, seed)
+    elif config.shards_path:
+        return _create_webdataset(config, seed)
+    else:
+        raise ValueError("Must specify either shards_path or hf_dataset in DataConfig")
 
 
 def create_dataloader(
