@@ -37,7 +37,9 @@ class MaskingConfig:
     min_context_ratio: float = 0.10  # Minimum acceptable context ratio
 
     # Target configuration
-    target_ratio: float = 0.23  # Target ratio of sequence as targets
+    # Note: Set higher than desired ratio to compensate for context exclusion
+    # (0.28 -> ~23% actual after excluding context positions)
+    target_ratio: float = 0.28  # Target ratio of sequence as targets
     target_block_length: int = 10  # Length of each target block (frames)
 
     # Retry configuration

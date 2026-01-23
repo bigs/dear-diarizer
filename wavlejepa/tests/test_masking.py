@@ -26,7 +26,7 @@ class TestMaskingConfig:
     def test_default_values(self):
         config = MaskingConfig()
         assert config.context_ratio == 0.35
-        assert config.target_ratio == 0.23
+        assert config.target_ratio == 0.28
         assert config.context_block_length == 10
         assert config.target_block_length == 10
         assert config.min_context_ratio == 0.10
@@ -117,18 +117,26 @@ class TestSampleMasks:
         overlap = jnp.sum(context_mask & target_mask)
         assert overlap == 0
 
-    def test_ratios_approximate_targets(self, key, default_config):
-        """Verify ratios are close to configured targets."""
+    def test_ratios_approximate_targets(self, default_config):
+        """Verify ratios are close to WavJEPA targets (~35% context, ~23% target)."""
         seq_len = 500
-        context_mask, target_mask = sample_masks(seq_len, default_config, key)
 
-        context_ratio = jnp.sum(context_mask) / seq_len
-        target_ratio = jnp.sum(target_mask) / seq_len
+        # Average over multiple samples for stable measurement
+        context_ratios = []
+        target_ratios = []
+        for i in range(20):
+            key = jax.random.PRNGKey(i)
+            context_mask, target_mask = sample_masks(seq_len, default_config, key)
+            context_ratios.append(float(jnp.sum(context_mask) / seq_len))
+            target_ratios.append(float(jnp.sum(target_mask) / seq_len))
 
-        # Context should be ~35% (allow 15% tolerance for block effects)
-        assert 0.20 <= context_ratio <= 0.50
-        # Target should be ~23% (more variance due to context exclusion)
-        assert 0.05 <= target_ratio <= 0.35
+        avg_context = sum(context_ratios) / len(context_ratios)
+        avg_target = sum(target_ratios) / len(target_ratios)
+
+        # Context should be ~35% (within ±5%)
+        assert 0.30 <= avg_context <= 0.40, f"Context ratio {avg_context:.1%} not near 35%"
+        # Target should be ~23% (within ±5%)
+        assert 0.18 <= avg_target <= 0.28, f"Target ratio {avg_target:.1%} not near 23%"
 
     def test_retry_triggers_on_low_coverage(self, key):
         """Verify retry mechanism activates when initial coverage is low."""
