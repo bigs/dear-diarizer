@@ -25,16 +25,40 @@ from .predictor import Predictor
 
 @dataclass
 class MaskingConfig:
-    """Configuration for context/target masking."""
+    """Configuration for context/target masking.
 
-    # Context block sampling
-    context_prob: float = 0.065  # Probability of starting a context block
-    context_length: int = 10  # Length of each context block (frames)
-    min_context_ratio: float = 0.10  # Minimum ratio of sequence as context
+    Uses ratio-based configuration to match WavJEPA's effective masking ratios.
+    Default values target ~35% context and ~23% targets.
+    """
 
-    # Target block sampling
-    target_prob: float = 0.025  # Probability of starting a target block
-    target_length: int = 10  # Length of each target block (frames)
+    # Context configuration
+    context_ratio: float = 0.35  # Target ratio of sequence as context
+    context_block_length: int = 10  # Length of each context block (frames)
+    min_context_ratio: float = 0.10  # Minimum acceptable context ratio
+
+    # Target configuration
+    target_ratio: float = 0.23  # Target ratio of sequence as targets
+    target_block_length: int = 10  # Length of each target block (frames)
+
+    # Retry configuration
+    max_retries: int = 10  # Maximum resampling attempts for min_context_ratio
+
+
+def _expand_block_starts(
+    starts: Bool[Array, " seq_len"],
+    seq_len: int,
+    block_length: int,
+) -> Bool[Array, " seq_len"]:
+    """Expand block start positions into full blocks."""
+    mask = jnp.zeros(seq_len, dtype=bool)
+    for offset in range(block_length):
+        indices = jnp.arange(seq_len) - offset
+        valid = (indices >= 0) & (indices < seq_len)
+        shifted_starts = jnp.where(
+            valid, starts[jnp.clip(indices, 0, seq_len - 1)], False
+        )
+        mask = mask | shifted_starts
+    return mask
 
 
 def sample_context_mask(
@@ -43,7 +67,9 @@ def sample_context_mask(
     key: PRNGKeyArray,
 ) -> Bool[Array, " seq_len"]:
     """
-    Sample context mask following WavJEPA's strategy.
+    Sample context mask using ratio-based block sampling.
+
+    Samples enough blocks to achieve the target context_ratio.
 
     Args:
         seq_len: Length of sequence
@@ -53,21 +79,20 @@ def sample_context_mask(
     Returns:
         context_mask: Boolean mask [seq_len] where True = context position
     """
-    # Sample start positions with probability context_prob
-    context_starts = jax.random.bernoulli(key, config.context_prob, (seq_len,))
+    target_frames = int(seq_len * config.context_ratio)
+    num_blocks = max(1, target_frames // config.context_block_length)
 
-    # Expand each start to a block of length context_length
-    context_mask = jnp.zeros(seq_len, dtype=bool)
-    for offset in range(config.context_length):
-        # Shift starts and mark as context
-        indices = jnp.arange(seq_len) - offset
-        valid = (indices >= 0) & (indices < seq_len)
-        shifted_starts = jnp.where(
-            valid, context_starts[jnp.clip(indices, 0, seq_len - 1)], False
-        )
-        context_mask = context_mask | shifted_starts
+    # Sample num_blocks random start positions (without replacement)
+    # Use top-k of random values for differentiable selection
+    rand_vals = jax.random.uniform(key, (seq_len,))
+    # Get top num_blocks positions
+    _, top_indices = jax.lax.top_k(rand_vals, num_blocks)
 
-    return context_mask
+    # Create starts mask from selected indices
+    starts = jnp.zeros(seq_len, dtype=bool).at[top_indices].set(True)
+
+    # Expand to full blocks
+    return _expand_block_starts(starts, seq_len, config.context_block_length)
 
 
 def sample_target_mask(
@@ -77,7 +102,10 @@ def sample_target_mask(
     key: PRNGKeyArray,
 ) -> Bool[Array, " seq_len"]:
     """
-    Sample target mask, ensuring no overlap with context.
+    Sample target mask from non-context positions using ratio-based block sampling.
+
+    Targets are sampled only from positions not already marked as context,
+    ensuring disjoint masks.
 
     Args:
         seq_len: Length of sequence
@@ -88,23 +116,70 @@ def sample_target_mask(
     Returns:
         target_mask: Boolean mask [seq_len] where True = target position
     """
-    # Sample start positions with probability target_prob
-    target_starts = jax.random.bernoulli(key, config.target_prob, (seq_len,))
+    target_frames = int(seq_len * config.target_ratio)
+    num_blocks = max(1, target_frames // config.target_block_length)
 
-    # Expand each start to a block of length target_length
-    target_mask = jnp.zeros(seq_len, dtype=bool)
-    for offset in range(config.target_length):
-        indices = jnp.arange(seq_len) - offset
-        valid = (indices >= 0) & (indices < seq_len)
-        shifted_starts = jnp.where(
-            valid, target_starts[jnp.clip(indices, 0, seq_len - 1)], False
-        )
-        target_mask = target_mask | shifted_starts
+    # Sample from non-context positions only
+    # Set context positions to -inf so they're never selected
+    rand_vals = jax.random.uniform(key, (seq_len,))
+    rand_vals = jnp.where(context_mask, -jnp.inf, rand_vals)
 
-    # Remove overlap with context
+    # Get top num_blocks positions from non-context area
+    _, top_indices = jax.lax.top_k(rand_vals, num_blocks)
+
+    # Create starts mask from selected indices
+    starts = jnp.zeros(seq_len, dtype=bool).at[top_indices].set(True)
+
+    # Expand to full blocks, then remove any overlap with context
+    target_mask = _expand_block_starts(starts, seq_len, config.target_block_length)
     target_mask = target_mask & ~context_mask
 
     return target_mask
+
+
+def sample_masks(
+    seq_len: int,
+    config: MaskingConfig,
+    key: PRNGKeyArray,
+) -> tuple[Bool[Array, " seq_len"], Bool[Array, " seq_len"]]:
+    """
+    Sample context and target masks with retry mechanism.
+
+    Resamples if context ratio falls below min_context_ratio.
+    Uses jax.lax.while_loop for JIT compatibility.
+
+    Args:
+        seq_len: Length of sequence
+        config: Masking configuration
+        key: PRNG key
+
+    Returns:
+        context_mask: Boolean mask [seq_len] where True = context position
+        target_mask: Boolean mask [seq_len] where True = target position
+    """
+    max_retries = config.max_retries
+    min_context = config.min_context_ratio
+
+    def cond_fn(state):
+        context_mask, _, _, attempt = state
+        context_ratio = jnp.sum(context_mask) / seq_len
+        return (context_ratio < min_context) & (attempt < max_retries)
+
+    def body_fn(state):
+        _, _, key, attempt = state
+        key, k1, k2 = jax.random.split(key, 3)
+        context_mask = sample_context_mask(seq_len, config, k1)
+        target_mask = sample_target_mask(seq_len, context_mask, config, k2)
+        return (context_mask, target_mask, key, attempt + 1)
+
+    # Initial sampling
+    key, k1, k2 = jax.random.split(key, 3)
+    init_context = sample_context_mask(seq_len, config, k1)
+    init_target = sample_target_mask(seq_len, init_context, config, k2)
+    init_state = (init_context, init_target, key, jnp.array(0))
+
+    final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
+    return final_state[0], final_state[1]
 
 
 def mask_to_indices(
@@ -263,17 +338,14 @@ class WavLeJEPA(eqx.Module):
             - num_context: Number of valid context positions
             - num_targets: Number of valid target positions
         """
-        key1, key2, key3, key4, key5 = jax.random.split(key, 5)
+        key1, key2, key3, key4 = jax.random.split(key, 4)
 
         # 1. Extract waveform features
         features = self.waveform_encoder(waveform)  # [N, 768]
         seq_len = features.shape[0]
 
-        # 2. Sample context and target masks
-        context_mask = sample_context_mask(seq_len, self.config.masking, key2)
-        target_mask = sample_target_mask(
-            seq_len, context_mask, self.config.masking, key3
-        )
+        # 2. Sample context and target masks (with retry for min coverage)
+        context_mask, target_mask = sample_masks(seq_len, self.config.masking, key2)
 
         # 3. Get position indices (fixed size, padded with seq_len for invalid)
         # Use seq_len as fill value so invalid indices point to a valid position
@@ -299,7 +371,7 @@ class WavLeJEPA(eqx.Module):
         full_output = self.context_encoder.forward_with_top_k(
             features,
             context_mask=None,  # No masking for targets
-            key=key5,
+            key=key3,
             inference=False,
         )
         targets = full_output[target_positions]  # [seq_len, 768]

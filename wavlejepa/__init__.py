@@ -18,6 +18,7 @@ from .model import (
     WavLeJEPA,
     sample_context_mask,
     sample_target_mask,
+    sample_masks,
 )
 from .losses import (
     masked_invariance_loss,
@@ -48,6 +49,7 @@ __all__ = [
     "WavLeJEPA",
     "sample_context_mask",
     "sample_target_mask",
+    "sample_masks",
     # Losses
     "masked_invariance_loss",
     "masked_sigreg_loss",
