@@ -7,7 +7,6 @@ Uses WebDataset to stream audio from object storage (S3/GCS/local).
 import io
 import os
 import queue
-import sys
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -15,12 +14,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Callable
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import librosa
 import webdataset as wds
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float
 
 from .waveform_encoder import TARGET_SR
 
@@ -56,6 +54,12 @@ class DataConfig:
     # Audio parameters
     sample_rate: int = TARGET_SR  # 16kHz
     crop_duration: float = 2.0  # seconds
+
+    # Multiple crops per audio file (like WavJEPA's samples_per_audio)
+    # Extracts N random crops from each audio before moving to next file
+    # With crops_per_audio=8 and batch_size=384, each batch contains
+    # 48 unique audio files × 8 crops each = 384 samples
+    crops_per_audio: int = 1
 
     # Batching
     batch_size: int = 32
@@ -217,6 +221,40 @@ def _batch_samples(
             batch = batch[batch_size:]
 
 
+def _expand_crops(
+    samples: Iterator[dict],
+    crops_per_audio: int,
+    crop_samples: int,
+    seed: int,
+) -> Iterator[dict]:
+    """
+    Expand each audio into N random crops.
+
+    Args:
+        samples: Iterator yielding dicts with "audio_full" (full decoded audio)
+        crops_per_audio: Number of crops to extract from each audio
+        crop_samples: Number of samples per crop
+        seed: Base seed for deterministic RNG
+
+    Yields:
+        Dicts with "audio" (cropped) and "__key__" (with _cropN suffix)
+    """
+    if crops_per_audio <= 1:
+        yield from samples
+        return
+
+    for sample in samples:
+        full_audio = sample["audio_full"]
+        key = sample["__key__"]
+
+        # Deterministic RNG per audio file for reproducibility
+        rng = np.random.default_rng((seed + hash(key)) % (2**32))
+
+        for i in range(crops_per_audio):
+            crop = random_crop_np(full_audio, crop_samples, rng)
+            yield {"audio": crop, "__key__": f"{key}_crop{i}"}
+
+
 def _create_webdataset(
     config: DataConfig,
     seed: int = 42,
@@ -232,6 +270,7 @@ def _create_webdataset(
         Iterator that yields processed audio samples
     """
     crop_samples = int(config.crop_duration * config.sample_rate)
+    multi_crop = config.crops_per_audio > 1
 
     def process_sample(sample: dict) -> dict:
         """Process a single sample from the tar."""
@@ -239,6 +278,9 @@ def _create_webdataset(
         # Check for pre-decoded tensor first (fast path)
         if "npy" in sample:
             audio = np.load(io.BytesIO(sample["npy"]))
+            if multi_crop:
+                # Return full audio for later crop expansion
+                return {"audio_full": audio, "__key__": sample.get("__key__", "")}
             # Still need random crop since chunks are typically 30s
             audio = random_crop_np(audio, crop_samples, rng)
             return {"audio": audio, "__key__": sample.get("__key__", "")}
@@ -261,6 +303,10 @@ def _create_webdataset(
             sample_rate=config.sample_rate,
         )
 
+        if multi_crop:
+            # Return full audio for later crop expansion
+            return {"audio_full": audio, "__key__": sample.get("__key__", "")}
+
         # Random crop
         audio = random_crop_np(audio, crop_samples, rng)
 
@@ -272,9 +318,15 @@ def _create_webdataset(
     )
 
     if config.num_workers > 1:
-        return _parallel_map(process_sample, dataset, config.num_workers)
+        samples = _parallel_map(process_sample, dataset, config.num_workers)
+    else:
+        samples = map(process_sample, dataset)
 
-    return map(process_sample, dataset)
+    # Expand each audio into multiple crops if configured
+    if multi_crop:
+        samples = _expand_crops(samples, config.crops_per_audio, crop_samples, seed)
+
+    return samples
 
 
 def _create_hf_dataset(
@@ -296,6 +348,7 @@ def _create_hf_dataset(
     from datasets import load_dataset, Audio, Features, Value, Sequence
 
     crop_samples = int(config.crop_duration * config.sample_rate)
+    multi_crop = config.crops_per_audio > 1
 
     # Known dataset schemas with audio decoding disabled
     # This avoids the torchcodec dependency by getting raw bytes
@@ -340,18 +393,28 @@ def _create_hf_dataset(
             sample_rate=config.sample_rate,
         )
 
-        # Random crop (AudioSet clips are 10s, we want 2s)
-        audio = random_crop_np(audio, crop_samples, rng)
-
         # Use video_id as key (AudioSet-specific, fallback to generic)
         key = sample.get("video_id", sample.get("id", ""))
+
+        if multi_crop:
+            # Return full audio for later crop expansion
+            return {"audio_full": audio, "__key__": key}
+
+        # Random crop (AudioSet clips are 10s, we want 2s)
+        audio = random_crop_np(audio, crop_samples, rng)
 
         return {"audio": audio, "__key__": key}
 
     if config.num_workers > 1:
-        return _parallel_map(process_hf_sample, ds, config.num_workers)
+        samples = _parallel_map(process_hf_sample, ds, config.num_workers)
+    else:
+        samples = map(process_hf_sample, ds)
 
-    return map(process_hf_sample, ds)
+    # Expand each audio into multiple crops if configured
+    if multi_crop:
+        samples = _expand_crops(samples, config.crops_per_audio, crop_samples, seed)
+
+    return samples
 
 
 def create_dataset(

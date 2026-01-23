@@ -19,6 +19,7 @@ loss:
 
 data:
   batch_size: 384
+  crops_per_audio: 8  # 48 unique files × 8 crops = 384 samples/batch
   sample_rate: 16000
   crop_duration: 2.0
   num_workers: 8
