@@ -513,8 +513,10 @@ class WavLeJEPA(eqx.Module):
         num_context_tiled = jnp.broadcast_to(num_context, (num_groups,))
 
         # vmap predictor over groups
+        # Extract predictor to avoid capturing full model (self) in closure
+        predictor = self.predictor
         predictions = jax.vmap(
-            lambda ctx, ctx_pos, tgt_pos, n_ctx, n_tgt: self.predictor(
+            lambda ctx, ctx_pos, tgt_pos, n_ctx, n_tgt: predictor(
                 context_output=ctx,
                 context_positions=ctx_pos,
                 target_positions=tgt_pos,
