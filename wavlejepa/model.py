@@ -16,6 +16,7 @@ from jaxtyping import Array, Float, Bool, Int, PRNGKeyArray
 from .waveform_encoder import WaveformEncoder
 from .context_encoder import ContextEncoder
 from .predictor import Predictor
+from .losses import masked_invariance_loss_single
 
 
 # =============================================================================
@@ -501,43 +502,47 @@ class WavLeJEPA(eqx.Module):
         # Gather targets for each group: [num_groups, seq_len, 768]
         targets = full_output[target_positions_per_group]
 
-        # 7. Predict targets from context for each group using vmap
-        # Tile context for each group
-        context_tiled = jnp.broadcast_to(
-            context_at_positions[None, :, :],
-            (num_groups, context_at_positions.shape[0], context_at_positions.shape[1]),
-        )
-        context_positions_tiled = jnp.broadcast_to(
-            context_positions[None, :], (num_groups, context_positions.shape[0])
-        )
-        num_context_tiled = jnp.broadcast_to(num_context, (num_groups,))
-
-        # vmap predictor over groups with gradient checkpointing
-        # checkpoint prevents storing intermediate activations - recomputes during backprop
+        # 7. Predict targets and compute loss using scan over groups
+        # Key insight: vmap over groups materializes all [groups, seq, 768] activations
+        # simultaneously during backprop, causing ~4x memory blowup.
+        # Instead, scan processes groups sequentially and we compute loss INSIDE the scan,
+        # returning only scalar loss. This bounds memory to batch×1 predictor activations.
         predictor = self.predictor
 
-        @jax.checkpoint
-        def predict_single_group(ctx, ctx_pos, tgt_pos, n_ctx, n_tgt):
-            return predictor(
-                context_output=ctx,
-                context_positions=ctx_pos,
-                target_positions=tgt_pos,
-                num_context=n_ctx,
-                num_targets=n_tgt,
-                inference=False,
-            )
+        def predict_and_loss_single_group(loss_sum, group_inputs):
+            """Process one target group: predict and compute loss, return scalar."""
+            tgt_pos, n_tgt, tgt_repr = group_inputs
 
-        predictions = jax.vmap(predict_single_group)(
-            context_tiled,
-            context_positions_tiled,
-            target_positions_per_group,
-            num_context_tiled,
-            num_targets_per_group,
-        )  # [num_groups, seq_len, 768]
+            # Checkpoint predictor to trade compute for memory
+            @jax.checkpoint
+            def predict():
+                return predictor(
+                    context_output=context_at_positions,
+                    context_positions=context_positions,
+                    target_positions=tgt_pos,
+                    num_context=num_context,
+                    num_targets=n_tgt,
+                    inference=False,
+                )
+
+            pred = predict()
+
+            # Compute invariance loss for this group (scalar)
+            group_loss = masked_invariance_loss_single(pred, tgt_repr, n_tgt)
+
+            return loss_sum + group_loss, None  # Don't accumulate predictions
+
+        # Scan over groups, accumulate only the scalar loss
+        total_inv_loss, _ = jax.lax.scan(
+            predict_and_loss_single_group,
+            jnp.array(0.0),  # initial loss sum
+            (target_positions_per_group, num_targets_per_group, targets),
+        )
+        # Average over groups
+        avg_inv_loss = total_inv_loss / num_groups
 
         return {
-            "predictions": predictions,
-            "targets": targets,
+            "invariance_loss": avg_inv_loss,  # Scalar - no memory explosion!
             "context_embeddings": context_at_positions,
             "context_mask": context_mask,
             "target_masks": target_masks,
