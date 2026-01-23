@@ -19,6 +19,8 @@ from .model import (
     sample_context_mask,
     sample_target_mask,
     sample_masks,
+    sample_target_groups,
+    sample_masks_with_groups,
 )
 from .losses import (
     masked_invariance_loss,
@@ -50,6 +52,8 @@ __all__ = [
     "sample_context_mask",
     "sample_target_mask",
     "sample_masks",
+    "sample_target_groups",
+    "sample_masks_with_groups",
     # Losses
     "masked_invariance_loss",
     "masked_sigreg_loss",

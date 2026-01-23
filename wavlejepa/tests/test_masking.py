@@ -9,6 +9,8 @@ from wavlejepa import (
     sample_context_mask,
     sample_target_mask,
     sample_masks,
+    sample_target_groups,
+    sample_masks_with_groups,
 )
 
 
@@ -201,6 +203,111 @@ class TestSampleMasks:
         assert target_mask.shape == (seq_len,)
 
 
+class TestTargetGroups:
+    def test_output_shape(self, key, default_config):
+        """Target groups should have shape [num_groups, seq_len]."""
+        seq_len = 100
+        context_mask = sample_context_mask(seq_len, default_config, key)
+        key2 = jax.random.PRNGKey(99)
+        target_masks = sample_target_groups(seq_len, context_mask, default_config, key2)
+        assert target_masks.shape == (default_config.num_target_groups, seq_len)
+        assert target_masks.dtype == jnp.bool_
+
+    def test_groups_disjoint_from_context(self, key, default_config):
+        """All target groups should be disjoint from context."""
+        seq_len = 200
+        context_mask = sample_context_mask(seq_len, default_config, key)
+        key2 = jax.random.PRNGKey(99)
+        target_masks = sample_target_groups(seq_len, context_mask, default_config, key2)
+
+        for i in range(default_config.num_target_groups):
+            overlap = jnp.sum(context_mask & target_masks[i])
+            assert overlap == 0, f"Group {i} overlaps with context"
+
+    def test_groups_disjoint_from_each_other(self, key, default_config):
+        """Target groups should be mutually disjoint."""
+        seq_len = 200
+        context_mask = sample_context_mask(seq_len, default_config, key)
+        key2 = jax.random.PRNGKey(99)
+        target_masks = sample_target_groups(seq_len, context_mask, default_config, key2)
+
+        num_groups = default_config.num_target_groups
+        for i in range(num_groups):
+            for j in range(i + 1, num_groups):
+                overlap = jnp.sum(target_masks[i] & target_masks[j])
+                assert overlap == 0, f"Groups {i} and {j} overlap"
+
+    def test_configurable_num_groups(self, key):
+        """Number of target groups should be configurable."""
+        config = MaskingConfig(num_target_groups=6)
+        seq_len = 200
+        context_mask = sample_context_mask(seq_len, config, key)
+        key2 = jax.random.PRNGKey(99)
+        target_masks = sample_target_groups(seq_len, context_mask, config, key2)
+        assert target_masks.shape[0] == 6
+
+    def test_single_group_matches_legacy(self, key):
+        """With num_target_groups=1, should behave like sample_target_mask."""
+        config = MaskingConfig(num_target_groups=1)
+        seq_len = 100
+        context_mask = sample_context_mask(seq_len, config, key)
+        key2 = jax.random.PRNGKey(99)
+        target_masks = sample_target_groups(seq_len, context_mask, config, key2)
+
+        assert target_masks.shape == (1, seq_len)
+        # Should be disjoint from context
+        assert jnp.sum(context_mask & target_masks[0]) == 0
+
+
+class TestSampleMasksWithGroups:
+    def test_output_shapes(self, key, default_config):
+        """Should return context mask and target group masks."""
+        seq_len = 100
+        context_mask, target_masks = sample_masks_with_groups(seq_len, default_config, key)
+        assert context_mask.shape == (seq_len,)
+        assert target_masks.shape == (default_config.num_target_groups, seq_len)
+
+    def test_all_masks_disjoint(self, key, default_config):
+        """Context and all target groups should be mutually disjoint."""
+        seq_len = 200
+        context_mask, target_masks = sample_masks_with_groups(seq_len, default_config, key)
+
+        # Check context vs all groups
+        for i in range(default_config.num_target_groups):
+            assert jnp.sum(context_mask & target_masks[i]) == 0
+
+        # Check groups vs each other
+        num_groups = default_config.num_target_groups
+        for i in range(num_groups):
+            for j in range(i + 1, num_groups):
+                assert jnp.sum(target_masks[i] & target_masks[j]) == 0
+
+    def test_jit_compatible(self, key, default_config):
+        """Should work under JIT compilation."""
+        seq_len = 100
+
+        @jax.jit
+        def jitted_sample(key):
+            return sample_masks_with_groups(seq_len, default_config, key)
+
+        context_mask, target_masks = jitted_sample(key)
+        assert context_mask.shape == (seq_len,)
+        assert target_masks.shape == (default_config.num_target_groups, seq_len)
+
+    def test_min_context_ratio_enforced(self, key):
+        """Retry mechanism should enforce min context ratio."""
+        config = MaskingConfig(
+            context_ratio=0.35,
+            min_context_ratio=0.10,
+            max_retries=10,
+            num_target_groups=4,
+        )
+        seq_len = 200
+        context_mask, _ = sample_masks_with_groups(seq_len, config, key)
+        context_ratio = jnp.sum(context_mask) / seq_len
+        assert context_ratio >= config.min_context_ratio
+
+
 class TestGradients:
     def test_masks_do_not_require_gradients(self, key, default_config):
         """Verify masking functions work in gradient context."""
@@ -215,6 +322,25 @@ class TestGradients:
 
         x = jax.random.normal(key, (seq_len,))
         # Should not raise - masks are not differentiable but that's expected
+        grad = jax.grad(loss_fn)(x, key)
+        assert grad.shape == (seq_len,)
+        assert jnp.all(jnp.isfinite(grad))
+
+    def test_target_groups_in_gradient_context(self, key, default_config):
+        """Verify target groups work in gradient context."""
+        seq_len = 50
+
+        def loss_fn(x, key):
+            context_mask, target_masks = sample_masks_with_groups(
+                seq_len, default_config, key
+            )
+            context_sum = jnp.sum(jnp.where(context_mask, x, 0.0))
+            target_sum = jnp.sum(
+                jnp.where(target_masks.any(axis=0), x, 0.0)
+            )
+            return context_sum + target_sum
+
+        x = jax.random.normal(key, (seq_len,))
         grad = jax.grad(loss_fn)(x, key)
         assert grad.shape == (seq_len,)
         assert jnp.all(jnp.isfinite(grad))

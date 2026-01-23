@@ -105,20 +105,28 @@ def compute_loss(
     num_slices: int = 256,
 ) -> tuple[Float[Array, ""], dict[str, Float[Array, ""]]]:
     """
-    Compute total loss from forward_train outputs.
+    Compute total loss from forward_train outputs with multiple target groups.
 
     Total loss = invariance_loss + λ * sigreg_loss
 
     Handles padded arrays from JIT-compatible forward pass by using
-    num_targets and num_context counts for proper averaging.
+    num_targets_per_group and num_context counts for proper averaging.
+
+    The invariance loss is computed per-group and then averaged across groups,
+    matching WavJEPA's approach of treating each target group as an independent
+    prediction task.
+
+    Supports both single-sample and batched outputs:
+    - Single: predictions [num_groups, seq, dim], num_targets_per_group [num_groups]
+    - Batched: predictions [batch, num_groups, seq, dim], num_targets_per_group [batch, num_groups]
 
     Args:
         outputs: Dictionary from WavLeJEPA.forward_train containing:
-            - predictions: Predicted target representations [seq, dim]
-            - targets: Actual target representations [seq, dim]
-            - context_embeddings: Context representations [seq, dim]
-            - num_context: Number of valid context positions
-            - num_targets: Number of valid target positions
+            - predictions: Predicted representations [(...), num_groups, seq, dim]
+            - targets: Actual target representations [(...), num_groups, seq, dim]
+            - context_embeddings: Context representations [(...), seq, dim]
+            - num_context: Number of valid context positions [(...)]
+            - num_targets_per_group: Number of valid targets per group [(...), num_groups]
         key: PRNG key for SIGReg random projections
         sigreg_weight: Weight for SIGReg loss on encoder embeddings (λ, default 0.02)
         num_slices: Number of random slices for SIGReg
@@ -127,23 +135,51 @@ def compute_loss(
         total_loss: Scalar loss for backprop
         metrics: Dict of individual loss components for logging
     """
-    num_targets = outputs["num_targets"]
+    predictions = outputs["predictions"]
+    targets = outputs["targets"]
+    num_targets_per_group = outputs["num_targets_per_group"]
+    context_embeddings = outputs["context_embeddings"]
     num_context = outputs["num_context"]
 
-    # Invariance loss: L2 between predictions and targets (masked)
+    # Handle both single-sample and batched cases by reshaping to [batch, seq, dim]
+    # Single sample: [num_groups, seq, dim] -> [num_groups, seq, dim]
+    # Batched: [batch, num_groups, seq, dim] -> [batch * num_groups, seq, dim]
+    pred_shape = predictions.shape
+    if predictions.ndim == 4:
+        # Batched case: [batch, num_groups, seq, dim]
+        batch_size, num_groups, seq_len, dim = pred_shape
+        predictions_flat = predictions.reshape(batch_size * num_groups, seq_len, dim)
+        targets_flat = targets.reshape(batch_size * num_groups, seq_len, dim)
+        num_valid_flat = num_targets_per_group.reshape(batch_size * num_groups)
+        # Context: [batch, seq, dim]
+        context_flat = context_embeddings
+        num_context_flat = num_context
+    else:
+        # Single sample case: [num_groups, seq, dim]
+        predictions_flat = predictions
+        targets_flat = targets
+        num_valid_flat = num_targets_per_group
+        # Context: [seq, dim] -> [1, seq, dim]
+        context_flat = context_embeddings[None, :, :]
+        num_context_flat = num_context[None]
+
+    # Invariance loss: L2 between predictions and targets for each group
     inv_loss = masked_invariance_loss(
-        outputs["predictions"],
-        outputs["targets"],
-        num_targets,
+        predictions_flat,
+        targets_flat,
+        num_valid_flat,
     )
 
-    # SIGReg on encoder embeddings (context + target)
+    # SIGReg on encoder embeddings
     key1, key2 = jax.random.split(key, 2)
     sig_loss_ctx = masked_sigreg_loss(
-        outputs["context_embeddings"], num_context, key1, num_slices
+        context_flat,
+        num_context_flat,
+        key1,
+        num_slices,
     )
     sig_loss_tgt = masked_sigreg_loss(
-        outputs["targets"], num_targets, key2, num_slices
+        targets_flat, num_valid_flat, key2, num_slices
     )
     sig_loss = (sig_loss_ctx + sig_loss_tgt) / 2
 

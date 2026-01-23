@@ -41,6 +41,7 @@ class MaskingConfig:
     # (0.28 -> ~23% actual after excluding context positions)
     target_ratio: float = 0.28  # Target ratio of sequence as targets
     target_block_length: int = 10  # Length of each target block (frames)
+    num_target_groups: int = 4  # Number of disjoint target groups (WavJEPA default)
 
     # Retry configuration
     max_retries: int = 10  # Maximum resampling attempts for min_context_ratio
@@ -215,6 +216,87 @@ def sample_masks(
     return final_state[0], final_state[1]
 
 
+def sample_target_groups(
+    seq_len: int,
+    context_mask: Bool[Array, " seq_len"],
+    config: MaskingConfig,
+    key: PRNGKeyArray,
+) -> Bool[Array, "num_groups seq_len"]:
+    """
+    Sample multiple disjoint target groups.
+
+    Each target group is disjoint from the context and from all other target groups.
+    This prevents shortcut learning where targets copy from nearby targets.
+
+    Args:
+        seq_len: Length of sequence
+        context_mask: Existing context mask [seq_len]
+        config: Masking configuration (includes num_target_groups)
+        key: PRNG key
+
+    Returns:
+        target_masks: Boolean masks [num_groups, seq_len] where True = target position
+    """
+    num_groups = config.num_target_groups
+
+    def sample_one_group(carry, key_i):
+        used_positions = carry
+        target_mask = sample_target_mask(seq_len, used_positions, config, key_i)
+        new_used = used_positions | target_mask
+        return new_used, target_mask
+
+    keys = jax.random.split(key, num_groups)
+    _, target_masks = jax.lax.scan(sample_one_group, context_mask, keys)
+
+    return target_masks  # [num_groups, seq_len]
+
+
+def sample_masks_with_groups(
+    seq_len: int,
+    config: MaskingConfig,
+    key: PRNGKeyArray,
+) -> tuple[Bool[Array, " seq_len"], Bool[Array, "num_groups seq_len"]]:
+    """
+    Sample context mask and multiple disjoint target groups with retry mechanism.
+
+    Resamples if context ratio falls below min_context_ratio.
+    Uses jax.lax.while_loop for JIT compatibility.
+
+    Args:
+        seq_len: Length of sequence
+        config: Masking configuration
+        key: PRNG key
+
+    Returns:
+        context_mask: Boolean mask [seq_len] where True = context position
+        target_masks: Boolean masks [num_groups, seq_len] where True = target position
+    """
+    max_retries = config.max_retries
+    min_context = config.min_context_ratio
+    num_groups = config.num_target_groups
+
+    def cond_fn(state):
+        context_mask, _, _, attempt = state
+        context_ratio = jnp.sum(context_mask) / seq_len
+        return (context_ratio < min_context) & (attempt < max_retries)
+
+    def body_fn(state):
+        _, _, key, attempt = state
+        key, k1, k2 = jax.random.split(key, 3)
+        context_mask = sample_context_mask(seq_len, config, k1)
+        target_masks = sample_target_groups(seq_len, context_mask, config, k2)
+        return (context_mask, target_masks, key, attempt + 1)
+
+    # Initial sampling
+    key, k1, k2 = jax.random.split(key, 3)
+    init_context = sample_context_mask(seq_len, config, k1)
+    init_targets = sample_target_groups(seq_len, init_context, config, k2)
+    init_state = (init_context, init_targets, key, jnp.array(0))
+
+    final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
+    return final_state[0], final_state[1]
+
+
 def mask_to_indices(
     mask: Bool[Array, " seq_len"],
     max_len: int,
@@ -351,10 +433,13 @@ class WavLeJEPA(eqx.Module):
         key: PRNGKeyArray,
     ) -> dict[str, Array]:
         """
-        Training forward pass.
+        Training forward pass with multiple target groups.
 
         JIT-compatible: uses fixed-size arrays with validity counts instead
         of dynamic boolean indexing.
+
+        Each target group is predicted independently - targets in one group
+        cannot attend to targets in other groups, preventing shortcut learning.
 
         Args:
             waveform: Raw audio waveform [T] at 16kHz
@@ -362,71 +447,97 @@ class WavLeJEPA(eqx.Module):
 
         Returns:
             Dictionary containing:
-            - predictions: Predicted target representations [max_seq_len, 768]
-            - targets: Actual target representations [max_seq_len, 768]
-            - context_embeddings: Context representations at masked positions [max_seq_len, 768]
-            - context_embeddings: Context representations at masked positions [max_seq_len, 768]
+            - predictions: Predicted representations [num_groups, seq_len, 768]
+            - targets: Actual target representations [num_groups, seq_len, 768]
+            - context_embeddings: Context representations [seq_len, 768]
             - context_mask: Boolean context mask [seq_len]
-            - target_mask: Boolean target mask [seq_len]
+            - target_masks: Boolean target masks [num_groups, seq_len]
             - num_context: Number of valid context positions
-            - num_targets: Number of valid target positions
+            - num_targets_per_group: Number of valid targets per group [num_groups]
         """
         key1, key2, key3 = jax.random.split(key, 3)
 
         # 1. Extract waveform features
         features = self.waveform_encoder(waveform)  # [N, 768]
         seq_len = features.shape[0]
+        num_groups = self.config.masking.num_target_groups
 
-        # 2. Sample context and target masks (with retry for min coverage)
-        context_mask, target_mask = sample_masks(seq_len, self.config.masking, key2)
+        # 2. Sample context and multiple disjoint target groups
+        context_mask, target_masks = sample_masks_with_groups(
+            seq_len, self.config.masking, key2
+        )  # context: [seq_len], targets: [num_groups, seq_len]
 
-        # 3. Get position indices (fixed size, padded with seq_len for invalid)
-        # Use seq_len as fill value so invalid indices point to a valid position
-        # (we'll use counts to ignore them in loss computation)
+        # 3. Get context position indices
         context_positions, num_context = mask_to_indices(context_mask, seq_len)
-        target_positions, num_targets = mask_to_indices(target_mask, seq_len)
-
-        # Replace -1 padding with 0 (a valid index) - we use counts to mask later
         context_positions = jnp.where(context_positions >= 0, context_positions, 0)
-        target_positions = jnp.where(target_positions >= 0, target_positions, 0)
 
-        # 4. Encode with context masking (all positions, but attention restricted)
+        # 4. Get target position indices for each group
+        def get_target_indices(target_mask):
+            positions, count = mask_to_indices(target_mask, seq_len)
+            positions = jnp.where(positions >= 0, positions, 0)
+            return positions, count
+
+        target_positions_per_group, num_targets_per_group = jax.vmap(get_target_indices)(
+            target_masks
+        )  # [num_groups, seq_len], [num_groups]
+
+        # 5. Encode with context masking (all positions, but attention restricted)
         context_output = self.context_encoder.forward_with_top_k(
             features,
             context_mask=context_mask,
             key=key1,
             inference=False,
         )
-        # Gather context at positions (fixed size array)
         context_at_positions = context_output[context_positions]  # [seq_len, 768]
 
-        # 5. Get target representations (encode full sequence without masking)
+        # 6. Get target representations (encode full sequence without masking)
         full_output = self.context_encoder.forward_with_top_k(
             features,
-            context_mask=None,  # No masking for targets
+            context_mask=None,
             key=key3,
             inference=False,
         )
-        targets = full_output[target_positions]  # [seq_len, 768]
 
-        # 6. Predict targets from context
-        predictions = self.predictor(
-            context_output=context_at_positions,
-            context_positions=context_positions,
-            target_positions=target_positions,
-            num_context=num_context,
-            num_targets=num_targets,
-            inference=False,
-        )  # [seq_len, 768]
+        # Gather targets for each group: [num_groups, seq_len, 768]
+        targets = full_output[target_positions_per_group]
+
+        # 7. Predict targets from context for each group using vmap
+        # Tile context for each group
+        context_tiled = jnp.broadcast_to(
+            context_at_positions[None, :, :],
+            (num_groups, context_at_positions.shape[0], context_at_positions.shape[1]),
+        )
+        context_positions_tiled = jnp.broadcast_to(
+            context_positions[None, :], (num_groups, context_positions.shape[0])
+        )
+        num_context_tiled = jnp.broadcast_to(num_context, (num_groups,))
+
+        # vmap predictor over groups
+        predictions = jax.vmap(
+            lambda ctx, ctx_pos, tgt_pos, n_ctx, n_tgt: self.predictor(
+                context_output=ctx,
+                context_positions=ctx_pos,
+                target_positions=tgt_pos,
+                num_context=n_ctx,
+                num_targets=n_tgt,
+                inference=False,
+            )
+        )(
+            context_tiled,
+            context_positions_tiled,
+            target_positions_per_group,
+            num_context_tiled,
+            num_targets_per_group,
+        )  # [num_groups, seq_len, 768]
 
         return {
             "predictions": predictions,
             "targets": targets,
             "context_embeddings": context_at_positions,
             "context_mask": context_mask,
-            "target_mask": target_mask,
+            "target_masks": target_masks,
             "num_context": num_context,
-            "num_targets": num_targets,
+            "num_targets_per_group": num_targets_per_group,
         }
 
     def extract_features(
