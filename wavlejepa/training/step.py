@@ -122,10 +122,12 @@ def make_train_step(
             # Cast model to compute dtype for mixed precision forward pass
             model_compute = cast_model_to_compute(model, compute_dtype)
 
+            @jax.checkpoint
             def single_forward(waveform, k):
                 return model_compute.forward_train(waveform, key=k)
 
             # vmap forward_train over batch dimension
+            # checkpoint on single_forward reduces memory by recomputing during backprop
             outputs = jax.vmap(single_forward)(batch, forward_keys)
 
             # Cast outputs to float32 for stable loss computation
