@@ -61,6 +61,7 @@ class DataConfig:
     sample_rate: int = 16000
     num_workers: int = 4
     prefetch_batches: int = 2
+    crops_per_audio: int = 1  # multiple crops per audio file (WavJEPA uses 8)
 
 
 @dataclass(frozen=True)

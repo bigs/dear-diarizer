@@ -4,6 +4,7 @@ Data pipeline for WavLeJEPA training.
 Uses WebDataset to stream audio from object storage (S3/GCS/local).
 """
 
+import hashlib
 import io
 import os
 import queue
@@ -221,6 +222,18 @@ def _batch_samples(
             batch = batch[batch_size:]
 
 
+def _stable_hash(key: str | bytes | int) -> int:
+    """Compute a stable hash for a key, independent of PYTHONHASHSEED.
+
+    Handles string, bytes, and integer keys commonly found in datasets.
+    """
+    if isinstance(key, bytes):
+        data = key
+    else:
+        data = str(key).encode()
+    return int(hashlib.md5(data).hexdigest(), 16) % (2**32)
+
+
 def _expand_crops(
     samples: Iterator[dict],
     crops_per_audio: int,
@@ -248,7 +261,8 @@ def _expand_crops(
         key = sample["__key__"]
 
         # Deterministic RNG per audio file for reproducibility
-        rng = np.random.default_rng((seed + hash(key)) % (2**32))
+        # Use stable hash (not Python's hash()) to ensure reproducibility across runs
+        rng = np.random.default_rng((seed + _stable_hash(key)) % (2**32))
 
         for i in range(crops_per_audio):
             crop = random_crop_np(full_audio, crop_samples, rng)
