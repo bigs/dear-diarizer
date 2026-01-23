@@ -309,6 +309,8 @@ class WavLeJEPA(eqx.Module):
             context_output=context_at_positions,
             context_positions=context_positions,
             target_positions=target_positions,
+            num_context=num_context,
+            num_targets=num_targets,
             inference=False,
         )  # [seq_len, 768]
 

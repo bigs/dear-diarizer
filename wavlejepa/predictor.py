@@ -131,6 +131,8 @@ class Predictor(eqx.Module):
         context_output: Float[Array, "context_len context_dim"],
         context_positions: Int[Array, " context_len"],
         target_positions: Int[Array, " target_len"],
+        num_context: Int[Array, ""],
+        num_targets: Int[Array, ""],
         *,
         key: Optional[PRNGKeyArray] = None,
         inference: bool = False,
@@ -142,6 +144,8 @@ class Predictor(eqx.Module):
             context_output: Context encoder output [context_len, context_dim]
             context_positions: Indices of context positions in original sequence
             target_positions: Indices of target positions to predict
+            num_context: Number of valid (non-padding) context positions
+            num_targets: Number of valid (non-padding) target positions
             key: PRNG key for dropout
             inference: If True, disable dropout
 
@@ -180,10 +184,18 @@ class Predictor(eqx.Module):
         pos_encodings = self.pos_encoding.get_encoding(all_positions)
         x = x + pos_encodings
 
+        # Build attention mask to exclude padded positions
+        # Equinox uses True = can attend, so we mark valid positions as True
+        ctx_valid = jnp.arange(context_len) < num_context
+        tgt_valid = jnp.arange(target_len) < num_targets
+        valid = jnp.concatenate([ctx_valid, tgt_valid])  # [context_len + target_len]
+        # Key masking: queries can only attend to valid keys
+        total_len = context_len + target_len
+        attn_mask = jnp.broadcast_to(valid[None, :], (total_len, total_len))
+
         # Process through transformer layers
-        # All tokens can attend to all other tokens (no masking in predictor)
         for i, layer in enumerate(self.layers):
-            x = layer(x, mask=None, key=keys[i], inference=inference)
+            x = layer(x, mask=attn_mask, key=keys[i], inference=inference)
 
         # Final normalization
         x = jax.vmap(self.final_norm)(x)
