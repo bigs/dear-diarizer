@@ -512,14 +512,13 @@ class WavLeJEPA(eqx.Module):
         )
         num_context_tiled = jnp.broadcast_to(num_context, (num_groups,))
 
-        # Use scan instead of vmap for groups to avoid nested vmap memory explosion
-        # (outer vmap over batch × inner vmap over groups = batch×groups activations)
-        # scan processes groups sequentially: peak memory is batch×1 instead of batch×groups
+        # vmap predictor over groups with gradient checkpointing
+        # checkpoint prevents storing intermediate activations - recomputes during backprop
         predictor = self.predictor
 
-        def predict_group(carry, group_inputs):
-            ctx, ctx_pos, tgt_pos, n_ctx, n_tgt = group_inputs
-            pred = predictor(
+        @jax.checkpoint
+        def predict_single_group(ctx, ctx_pos, tgt_pos, n_ctx, n_tgt):
+            return predictor(
                 context_output=ctx,
                 context_positions=ctx_pos,
                 target_positions=tgt_pos,
@@ -527,18 +526,13 @@ class WavLeJEPA(eqx.Module):
                 num_targets=n_tgt,
                 inference=False,
             )
-            return carry, pred
 
-        _, predictions = jax.lax.scan(
-            predict_group,
-            None,  # no carry needed
-            (
-                context_tiled,
-                context_positions_tiled,
-                target_positions_per_group,
-                num_context_tiled,
-                num_targets_per_group,
-            ),
+        predictions = jax.vmap(predict_single_group)(
+            context_tiled,
+            context_positions_tiled,
+            target_positions_per_group,
+            num_context_tiled,
+            num_targets_per_group,
         )  # [num_groups, seq_len, 768]
 
         return {
