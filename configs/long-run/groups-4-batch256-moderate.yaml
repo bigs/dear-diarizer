@@ -7,7 +7,7 @@ precision:
   loss_in_float32: true
 
 optimizer:
-  peak_lr: 8e-5  # 1.0e-4 × sqrt(256/384), at the empirical threshold
+  peak_lr: 8.0e-5  # 1.0e-4 × sqrt(256/384), at the empirical threshold
   warmup_steps: 100000
   total_steps: 400000
   weight_decay: 0.04

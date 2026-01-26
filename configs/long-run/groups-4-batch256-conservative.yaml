@@ -7,7 +7,7 @@ precision:
   loss_in_float32: true
 
 optimizer:
-  peak_lr: 6.5e-5  # 8e-5 × sqrt(256/384), below empirical kick point
+  peak_lr: 6.5e-5  # 8.0e-5 × sqrt(256/384), below empirical kick point
   warmup_steps: 100000
   total_steps: 400000
   weight_decay: 0.04
