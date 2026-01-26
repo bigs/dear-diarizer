@@ -16,7 +16,7 @@ from jaxtyping import Array, Float, Bool, Int, PRNGKeyArray
 from .waveform_encoder import WaveformEncoder
 from .context_encoder import ContextEncoder
 from .predictor import Predictor
-from .losses import masked_invariance_loss_single
+from .losses import masked_invariance_loss_weighted
 
 
 # =============================================================================
@@ -461,8 +461,6 @@ class WavLeJEPA(eqx.Module):
         # 1. Extract waveform features
         features = self.waveform_encoder(waveform)  # [N, 768]
         seq_len = features.shape[0]
-        num_groups = self.config.masking.num_target_groups
-
         # 2. Sample context and multiple disjoint target groups
         context_mask, target_masks = sample_masks_with_groups(
             seq_len, self.config.masking, key2
@@ -502,18 +500,12 @@ class WavLeJEPA(eqx.Module):
         # Gather targets for each group: [num_groups, seq_len, 768]
         targets = full_output[target_positions_per_group]
 
-        # 7. Predict targets and compute loss using scan over groups
-        # Key insight: vmap over groups materializes all [groups, seq, 768] activations
-        # simultaneously during backprop, causing ~4x memory blowup.
-        # Instead, scan processes groups sequentially and we compute loss INSIDE the scan,
-        # returning only scalar loss. This bounds memory to batch×1 predictor activations.
+        # 7. Predict targets for all groups and compute token-weighted loss
+        # Treat each target group like a batch item (WavJEPA behavior).
         predictor = self.predictor
 
-        def predict_and_loss_single_group(loss_sum, group_inputs):
-            """Process one target group: predict and compute loss, return scalar."""
-            tgt_pos, n_tgt, tgt_repr = group_inputs
-
-            # Checkpoint predictor to trade compute for memory
+        def predict_group(tgt_pos, n_tgt):
+            """Predict one target group (vectorized across groups via vmap)."""
             @jax.checkpoint
             def predict():
                 return predictor(
@@ -525,21 +517,14 @@ class WavLeJEPA(eqx.Module):
                     inference=False,
                 )
 
-            pred = predict()
+            return predict()
 
-            # Compute invariance loss for this group (scalar)
-            group_loss = masked_invariance_loss_single(pred, tgt_repr, n_tgt)
-
-            return loss_sum + group_loss, None  # Don't accumulate predictions
-
-        # Scan over groups, accumulate only the scalar loss
-        total_inv_loss, _ = jax.lax.scan(
-            predict_and_loss_single_group,
-            jnp.array(0.0),  # initial loss sum
-            (target_positions_per_group, num_targets_per_group, targets),
+        preds = jax.vmap(predict_group)(
+            target_positions_per_group, num_targets_per_group
+        )  # [num_groups, seq_len, 768]
+        inv_loss = masked_invariance_loss_weighted(
+            preds, targets, num_targets_per_group
         )
-        # Average over groups
-        avg_inv_loss = total_inv_loss / num_groups
 
         # 8. Gather encoder embeddings at ALL target positions (union of groups) for SIGReg
         # SIGReg regularizes the encoder output distribution - it doesn't need per-group separation
@@ -551,7 +536,7 @@ class WavLeJEPA(eqx.Module):
         all_target_embeddings = full_output[all_target_positions]
 
         return {
-            "invariance_loss": avg_inv_loss,  # Scalar - no memory explosion!
+            "invariance_loss": inv_loss,
             "context_embeddings": context_at_positions,
             "target_embeddings": all_target_embeddings,  # Union of all target positions
             "context_mask": context_mask,

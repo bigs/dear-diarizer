@@ -1,4 +1,4 @@
-# WavLeJEPA long run - 4 target groups, batch 256 (conservative)
+# WavLeJEPA long run - 4 target groups, batch 64 (effective batch 256)
 # Based on empirical observation: batch-384 run started kicking at ~8e-5
 # Peak LR: 8e-5 × sqrt(256/384) ≈ 6.5e-5
 
@@ -18,8 +18,8 @@ loss:
   num_slices: 256
 
 data:
-  batch_size: 256
-  crops_per_audio: 8  # 32 unique files × 8 crops = 256 samples/batch
+  batch_size: 64
+  crops_per_audio: 8  # 8 unique files × 8 crops = 64 samples/batch
   sample_rate: 16000
   crop_duration: 2.0
   num_workers: 8
@@ -40,7 +40,7 @@ checkpoint:
 
 logging:
   project: wavlejepa
-  log_every_n_steps: 100
+  log_every_n_steps: 50
   eval_every_n_steps: 2000
 
 seed: 42

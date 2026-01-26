@@ -58,13 +58,32 @@ def masked_invariance_loss(
         num_valid: Number of valid (non-padding) positions [batch]
 
     Returns:
-        Scalar MSE loss averaged over batch and valid positions
+        Scalar MSE loss averaged over batch and valid positions (group-weighted)
     """
     # vmap over batch dimension
     per_sample_loss = jax.vmap(masked_invariance_loss_single)(
         predictions, targets, num_valid
     )
     return jnp.mean(per_sample_loss)
+
+
+def masked_invariance_loss_weighted(
+    predictions: Float[Array, "batch seq dim"],
+    targets: Float[Array, "batch seq dim"],
+    num_valid: Int[Array, "batch"],
+) -> Float[Array, ""]:
+    """
+    Token-weighted L2 loss across a batch of masked predictions.
+
+    Each item in the batch contributes proportionally to its number of valid
+    (non-padding) target positions.
+    """
+    per_sample_loss = jax.vmap(masked_invariance_loss_single)(
+        predictions, targets, num_valid
+    )
+    total = jnp.sum(per_sample_loss * num_valid)
+    denom = jnp.maximum(jnp.sum(num_valid), 1)
+    return total / denom
 
 
 def masked_sigreg_loss(
@@ -109,8 +128,8 @@ def compute_loss(
 
     Total loss = invariance_loss + λ * sigreg_loss
 
-    The invariance loss is computed inside the model's forward_train using
-    scan over groups (for memory efficiency), and passed as a scalar.
+    The invariance loss is computed inside the model's forward_train and
+    passed as a scalar per sample.
 
     SIGReg is computed on both context and target encoder embeddings.
     Target embeddings are the union of all target positions (not per-group),
@@ -141,8 +160,12 @@ def compute_loss(
     num_context = outputs["num_context"]
     num_targets = outputs["num_targets"]
 
-    # Average invariance loss over batch (if batched)
-    inv_loss = jnp.mean(inv_loss_per_sample)
+    # Average invariance loss over batch, weighted by number of targets
+    if inv_loss_per_sample.ndim == 0:
+        inv_loss = inv_loss_per_sample
+    else:
+        total_targets = jnp.maximum(jnp.sum(num_targets), 1)
+        inv_loss = jnp.sum(inv_loss_per_sample * num_targets) / total_targets
 
     # Handle both single-sample and batched cases
     if context_embeddings.ndim == 2:
