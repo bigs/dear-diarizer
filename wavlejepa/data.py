@@ -8,7 +8,9 @@ import hashlib
 import io
 import os
 import queue
+import socket
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -139,6 +141,104 @@ def _get_thread_rng(seed: int) -> np.random.Generator:
         _THREAD_LOCAL.rng = np.random.default_rng((seed + thread_id) % (2**32))
         _THREAD_LOCAL.seed = seed
     return _THREAD_LOCAL.rng
+
+
+def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _is_transient_hf_error(exc: BaseException) -> bool:
+    for err in _iter_exception_chain(exc):
+        if isinstance(err, (TimeoutError, ConnectionError, socket.gaierror)):
+            return True
+        if isinstance(err, OSError):
+            if getattr(err, "errno", None) in (-3, 101, 104, 110, 111, 113):
+                return True
+        if isinstance(err, RuntimeError):
+            if "client has been closed" in str(err).lower():
+                return True
+
+        message = str(err).lower()
+        if "temporary failure in name resolution" in message:
+            return True
+        if "name or service not known" in message:
+            return True
+        if "connection reset" in message or "connection aborted" in message:
+            return True
+        if "timed out" in message or "timeout" in message:
+            return True
+
+        try:
+            import httpx
+        except Exception:
+            httpx = None
+        if httpx is not None and isinstance(err, (httpx.TimeoutException, httpx.TransportError)):
+            return True
+
+        try:
+            import requests
+        except Exception:
+            requests = None
+        if requests is not None and isinstance(err, requests.exceptions.RequestException):
+            return True
+
+        try:
+            from huggingface_hub.utils import HfHubHTTPError
+        except Exception:
+            HfHubHTTPError = None
+        if HfHubHTTPError is not None and isinstance(err, HfHubHTTPError):
+            response = getattr(err, "response", None)
+            status = getattr(response, "status_code", None)
+            if status in (408, 429, 500, 502, 503, 504):
+                return True
+
+    return False
+
+
+def _log_hf_retry(message: str) -> None:
+    try:
+        from tqdm import tqdm
+    except Exception:
+        tqdm = None
+
+    if tqdm is None:
+        print(message)
+    else:
+        tqdm.write(message)
+
+
+def _retrying_hf_iterator(
+    make_iter: Callable[[], Iterator[dict]],
+    dataset_label: str,
+    base_backoff: float = 1.0,
+    max_backoff: float = 60.0,
+) -> Iterator[dict]:
+    attempt = 0
+    while True:
+        progress_made = False
+        try:
+            for item in make_iter():
+                progress_made = True
+                yield item
+            return
+        except BaseException as exc:
+            if not _is_transient_hf_error(exc):
+                raise
+            if progress_made:
+                attempt = 0
+            attempt += 1
+            wait = min(max_backoff, base_backoff * (2 ** (attempt - 1)))
+            _log_hf_retry(
+                f"[hf] transient error while streaming {dataset_label}: "
+                f"{type(exc).__name__}: {exc} - retrying in {wait:.1f}s "
+                f"(attempt {attempt})"
+            )
+            time.sleep(wait)
 
 
 def _parallel_map(
@@ -438,24 +538,29 @@ def _create_hf_dataset(
 
     features = KNOWN_FEATURES.get(config.hf_dataset)
 
-    # Load dataset in streaming mode
-    ds = load_dataset(
-        config.hf_dataset,
-        config.hf_subset,
-        split=config.hf_split,
-        streaming=True,
-        features=features,  # None for unknown datasets
-    )
+    def make_stream() -> Iterator[dict]:
+        # Load dataset in streaming mode
+        ds = load_dataset(
+            config.hf_dataset,
+            config.hf_subset,
+            split=config.hf_split,
+            streaming=True,
+            features=features,  # None for unknown datasets
+        )
 
-    # For unknown datasets, try to disable audio decoding via cast_column
-    if features is None:
-        try:
-            ds = ds.cast_column("audio", Audio(decode=False))
-        except (ValueError, KeyError):
-            pass  # Column doesn't exist or can't be cast
+        # For unknown datasets, try to disable audio decoding via cast_column
+        if features is None:
+            try:
+                ds = ds.cast_column("audio", Audio(decode=False))
+            except (ValueError, KeyError):
+                pass  # Column doesn't exist or can't be cast
 
-    # Shuffle with buffer
-    ds = ds.shuffle(seed=seed, buffer_size=config.shuffle_buffer)
+        # Shuffle with buffer
+        ds = ds.shuffle(seed=seed, buffer_size=config.shuffle_buffer)
+        return iter(ds)
+
+    dataset_label = f"{config.hf_dataset}:{config.hf_subset}/{config.hf_split}"
+    ds = _retrying_hf_iterator(make_stream, dataset_label)
 
     def process_hf_sample(sample: dict) -> list[dict]:
         """Decode audio and extract all crops in worker thread."""
