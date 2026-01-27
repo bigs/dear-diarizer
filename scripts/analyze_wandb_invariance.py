@@ -53,16 +53,6 @@ def _fetch_runs(entity: Optional[str], project: str, run_names: Iterable[str]) -
     runs = {r.name: r for r in api.runs(f"{entity}/{project}", filters=filters)}
     rows = []
 
-    keys = [
-        "loss/total",
-        "loss/invariance",
-        "loss/sigreg",
-        "train/loss",
-        "lr",
-        "optimizer/lr",
-        "_step",
-    ]
-
     for name in run_names:
         run = runs.get(name)
         if run is None:
@@ -87,7 +77,14 @@ def _fetch_runs(entity: Optional[str], project: str, run_names: Iterable[str]) -
         raise SystemExit("No data collected from W&B")
 
     df = pd.concat(rows, ignore_index=True)
-    if "lr" not in df.columns or df["lr"].isna().all():
+    lr_col = df["lr"] if "lr" in df.columns else None
+    lr_missing = True
+    if isinstance(lr_col, pd.Series):
+        lr_missing = lr_col.isna().all()
+    elif lr_col is not None:
+        lr_missing = lr_col.isna().all().all()
+
+    if "lr" not in df.columns or lr_missing:
         if "optimizer/lr" in df.columns:
             df["lr"] = df["optimizer/lr"]
     return df
@@ -101,6 +98,7 @@ def _analyze(df: pd.DataFrame, match_step: Optional[float]) -> dict[str, dict[st
     summary: dict[str, dict[str, float]] = {}
 
     for run_name, g in df.groupby("run_name"):
+        run_key = str(run_name)
         g = g.dropna(subset=["_step"]).sort_values("_step")
         if g.empty:
             continue
@@ -109,7 +107,7 @@ def _analyze(df: pd.DataFrame, match_step: Optional[float]) -> dict[str, dict[st
         window = _tail_window(n)
         tail = g.iloc[-window:]
 
-        summary[run_name] = {
+        summary[run_key] = {
             "points": float(n),
             "last_step": float(last["_step"]),
             "last_loss_total": float(last.get("loss/total", np.nan)),
@@ -122,20 +120,21 @@ def _analyze(df: pd.DataFrame, match_step: Optional[float]) -> dict[str, dict[st
         }
 
         if "sigreg_weight" in g.columns:
-            summary[run_name]["sigreg_weight"] = float(g["sigreg_weight"].dropna().iloc[-1])
+            summary[run_key]["sigreg_weight"] = float(g["sigreg_weight"].dropna().iloc[-1])
         if "peak_lr" in g.columns:
-            summary[run_name]["peak_lr"] = float(g["peak_lr"].dropna().iloc[-1])
+            summary[run_key]["peak_lr"] = float(g["peak_lr"].dropna().iloc[-1])
 
     if match_step is not None:
         for run_name, g in df.groupby("run_name"):
+            run_key = str(run_name)
             g = g.dropna(subset=["_step"]).sort_values("_step")
             if g.empty:
                 continue
             idx = (g["_step"] - match_step).abs().idxmin()
             row = g.loc[idx]
-            summary[run_name]["matched_step"] = float(row.get("_step", np.nan))
-            summary[run_name]["matched_inv"] = float(row.get("loss/invariance", np.nan))
-            summary[run_name]["matched_total"] = float(row.get("loss/total", np.nan))
+            summary[run_key]["matched_step"] = float(row.get("_step", np.nan))
+            summary[run_key]["matched_inv"] = float(row.get("loss/invariance", np.nan))
+            summary[run_key]["matched_total"] = float(row.get("loss/total", np.nan))
 
     return summary
 
