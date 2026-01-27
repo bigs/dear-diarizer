@@ -84,6 +84,7 @@ def main(
     use_wandb: bool = True,
     use_dummy_data: bool = False,
     model_config: Optional[WavLeJEPAConfig] = None,
+    resume_wandb_id: Optional[str] = None,
 ):
     """
     Main training loop.
@@ -94,6 +95,7 @@ def main(
         use_wandb: Whether to enable wandb logging
         use_dummy_data: Use random dummy data instead of real data
         model_config: Optional model config (uses defaults if None)
+        resume_wandb_id: Optional wandb run ID to resume logging to
     """
     # Load config
     if config_path:
@@ -213,7 +215,7 @@ def main(
 
     # Initialize logger
     if use_wandb:
-        logger = WandBLogger(config.logging, config)
+        logger = WandBLogger(config.logging, config, resume_run_id=resume_wandb_id)
     else:
         logger = NoOpLogger()
 
@@ -342,6 +344,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable wandb logging",
     )
+    parser.add_argument(
+        "--resume-wandb-id",
+        type=str,
+        default=None,
+        help="Wandb run ID to resume logging to (found in run URL)",
+    )
     args = parser.parse_args()
 
     main(
@@ -349,4 +357,5 @@ if __name__ == "__main__":
         shards_path=args.shards,
         use_wandb=not args.no_wandb,
         use_dummy_data=args.dummy,
+        resume_wandb_id=args.resume_wandb_id,
     )
