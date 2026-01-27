@@ -1,0 +1,50 @@
+# WavLeJEPA long run - 4 target groups, batch 64 (effective batch 256)
+# Based on empirical observation: batch-384 run destabilized at ~1.0e-4
+# Peak LR: 1.0e-4 × sqrt(256/384) ≈ 8e-5
+#
+# SIGReg weight 4× adjustment:
+# With batch=64 and 4 target groups, invariance sees 256 effective samples
+# but SIGReg only sees 64. Multiply sigreg_weight by 4 to compensate.
+
+precision:
+  compute_dtype: bfloat16
+  loss_in_float32: true
+
+optimizer:
+  peak_lr: 8.0e-5  # 1.0e-4 × sqrt(256/384), at the empirical threshold
+  warmup_steps: 100000
+  total_steps: 400000
+  weight_decay: 0.04
+  grad_clip_norm: 1.0
+
+loss:
+  sigreg_weight: 0.08  # 0.02 × 4 to match effective batch ratio
+  num_slices: 256
+
+data:
+  batch_size: 64
+  crops_per_audio: 8  # 8 unique files × 8 crops = 64 samples/batch
+  sample_rate: 16000
+  crop_duration: 2.0
+  num_workers: 8
+  prefetch_batches: 4
+
+masking:
+  context_ratio: 0.35
+  target_ratio: 0.28
+  context_block_length: 10
+  target_block_length: 10
+  num_target_groups: 4
+  min_context_ratio: 0.10
+
+checkpoint:
+  checkpoint_dir: checkpoints-long-run-groups-4-batch256-moderate-sigreg4x
+  save_every_n_steps: 10000
+  keep_n_checkpoints: 5
+
+logging:
+  project: wavlejepa
+  log_every_n_steps: 50
+  eval_every_n_steps: 2000
+
+seed: 42
