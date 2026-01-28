@@ -28,5 +28,7 @@ shards/
 checkpoints/
 wandb/
 analysis/
+archive/
 
 .ob1
+
