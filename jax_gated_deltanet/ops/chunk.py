@@ -3,7 +3,7 @@
 This module implements the chunkwise parallel algorithm for the gated delta rule
 in pure JAX. The algorithm processes sequences in chunks, computing:
 1. Intra-chunk outputs in parallel (O(chunk_size²) work per chunk)
-2. Inter-chunk state propagation via associative scan
+2. Inter-chunk state propagation via scan over chunks
 
 This provides O(n/chunk_size) sequential steps instead of O(n), giving
 significant speedups for long sequences while maintaining numerical equivalence
@@ -66,20 +66,20 @@ def chunk_local_cumsum(
 def solve_tril(
     A: Float[Array, "... chunk_size chunk_size"],
 ) -> Float[Array, "... chunk_size chunk_size"]:
-    """Compute (I - A)^{-1} where A is strictly lower triangular.
+    """Compute (I + A)^{-1} where A is strictly lower triangular.
 
-    Uses the identity: (I - A)^{-1} = I + A + A² + A³ + ... for nilpotent A.
+    Uses the identity: (I + A)^{-1} = I - A + A² - A³ + ... for nilpotent A.
     Since A is strictly lower triangular, A^{chunk_size} = 0, so this series
     terminates and we can compute it exactly.
 
     For efficiency, we use the recurrence:
-        (I - A)^{-1}[i, :] = e_i + A[i, :] @ (I - A)^{-1}[:i, :]
+        (I + A)^{-1}[i, :] = e_i - A[i, :] @ (I + A)^{-1}[:i, :]
 
     Args:
         A: Strictly lower triangular matrix [..., chunk_size, chunk_size]
 
     Returns:
-        (I - A)^{-1} with same shape as A
+        (I + A)^{-1} with same shape as A
     """
     chunk_size = A.shape[-1]
 
@@ -89,7 +89,7 @@ def solve_tril(
     # Broadcast to batch dimensions
     result = jnp.broadcast_to(result, A.shape)
 
-    # We need to solve row by row: result[i] = e_i + A[i] @ result[:i]
+    # We need to solve row by row: result[i] = e_i - A[i] @ result[:i]
     # This is inherently sequential in chunk_size, but chunk_size is small (64)
 
     def solve_row(carry, i):
@@ -100,7 +100,7 @@ def solve_tril(
         # So we only need A[i, :i] @ result[:i, :]
         row_update = jnp.einsum("...j,...jk->...k", A[..., i, :], result)
         # Update row i
-        result = result.at[..., i, :].add(row_update)
+        result = result.at[..., i, :].add(-row_update)
         return result, None
 
     result, _ = jax.lax.scan(solve_row, result, jnp.arange(chunk_size))
@@ -175,7 +175,7 @@ def recompute_w_u(
         k: Keys [batch, num_chunks, chunk_size, heads, head_k]
         v: Values [batch, num_chunks, chunk_size, heads, head_v]
         beta: Learning rates [batch, num_chunks, chunk_size, heads]
-        A_inv: (I - A)^{-1} [batch, num_chunks, heads, chunk_size, chunk_size]
+        A_inv: (I + A)^{-1} [batch, num_chunks, heads, chunk_size, chunk_size]
         g_cumsum: Cumulative decay [batch, num_chunks, chunk_size, heads]
 
     Returns:
@@ -241,58 +241,40 @@ def chunk_fwd_h(
     batch, num_chunks, chunk_size, heads, head_k = k.shape
     head_v = u.shape[-1]
 
-    # Compute per-chunk final states (contribution from within chunk only)
-    # h_chunk = sum_l(w[l] ⊗ u[l] * exp(g_end - g[l]))
-    # where g_end = g_cumsum[..., -1]
-    g_end = g_cumsum[..., -1:, :]  # [batch, num_chunks, 1, heads]
-    decay_to_end = jnp.exp(g_end - g_cumsum)  # [batch, num_chunks, chunk_size, heads]
-
-    # w * decay_to_end: [batch, num_chunks, chunk_size, heads, head_k]
-    w_decayed = w * decay_to_end[..., None]
-
-    # Outer product sum: w_decayed ⊗ u summed over chunk_size
-    # [batch, num_chunks, chunk_size, heads, head_k] ⊗ [..., head_v]
-    # -> [batch, num_chunks, heads, head_k, head_v]
-    h_local = jnp.einsum("bclhk,bclhv->bchkv", w_decayed, u)
-
-    # Total decay within each chunk
-    chunk_decay = jnp.exp(g_cumsum[..., -1, :])  # [batch, num_chunks, heads]
-
-    # Now propagate states between chunks using associative scan
-    # State update: h_new = h_prev * decay + h_local
-
     if initial_state is None:
         initial_state = jnp.zeros((batch, heads, head_k, head_v), dtype=k.dtype)
 
+    # Scan over chunks. Within each chunk we avoid sequential time steps by
+    # using the WY-representation-derived w/u and a single batched update.
     def scan_fn(h_prev, inputs):
-        h_chunk, decay = inputs
-        # h_prev: [batch, heads, head_k, head_v]
-        # h_chunk: [batch, heads, head_k, head_v]
-        # decay: [batch, heads]
-        h_new = h_prev * decay[..., None, None] + h_chunk
-        return h_new, h_new
+        k_c, w_c, u_c, g_c = inputs
+        # g_c: [batch, chunk_size, heads] (cumulative within chunk)
+        g_end = g_c[:, -1, :]  # [batch, heads]
+        decay_to_end = jnp.exp(g_end[:, None, :] - g_c)  # [batch, chunk_size, heads]
 
-    # Transpose for scan: [num_chunks, batch, heads, ...]
-    h_local_scan = rearrange(h_local, "b c h k v -> c b h k v")
-    decay_scan = rearrange(chunk_decay, "b c h -> c b h")
+        # v_new = u - w @ h_prev
+        v_new = u_c - jnp.einsum("blhk,bhkv->blhv", w_c, h_prev)
 
-    final_state, h_all = jax.lax.scan(
-        scan_fn, initial_state, (h_local_scan, decay_scan)
+        # Update state to end of chunk
+        v_scaled = v_new * decay_to_end[..., None]
+        h_end = h_prev * jnp.exp(g_end)[..., None, None] + jnp.einsum(
+            "blhk,blhv->bhkv", k_c, v_scaled
+        )
+
+        return h_end, (h_prev, v_new)
+
+    # Transpose for scan: [num_chunks, batch, ...]
+    k_scan = rearrange(k, "b c l h k -> c b l h k")
+    w_scan = rearrange(w, "b c l h k -> c b l h k")
+    u_scan = rearrange(u, "b c l h v -> c b l h v")
+    g_scan = rearrange(g_cumsum, "b c l h -> c b l h")
+
+    final_state, (h_begin_scan, v_new_scan) = jax.lax.scan(
+        scan_fn, initial_state, (k_scan, w_scan, u_scan, g_scan)
     )
 
-    # h_all is the state at the END of each chunk
-    # We need the state at the BEGINNING of each chunk for output computation
-    # h_begin[0] = initial_state, h_begin[c] = h_all[c-1]
-    h_begin = jnp.concatenate(
-        [initial_state[None, ...], h_all[:-1]], axis=0
-    )  # [num_chunks, batch, heads, head_k, head_v]
-
-    h_begin = rearrange(h_begin, "c b h k v -> b c h k v")
-
-    # v_new is the output of the delta rule within each chunk
-    # For now, we'll compute this in the output function
-    # Here we just return u as v_new (the transformed values)
-    v_new = u
+    h_begin = rearrange(h_begin_scan, "c b h k v -> b c h k v")
+    v_new = rearrange(v_new_scan, "c b l h v -> b c l h v")
 
     return h_begin, v_new, final_state
 
@@ -412,7 +394,7 @@ def gated_delta_rule_chunk_simple(
         q = jnp.pad(q, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
         k = jnp.pad(k, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
         v = jnp.pad(v, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
-        g = jnp.pad(g, ((0, 0), (0, pad_len), (0, 0)), constant_values=-1e9)
+        g = jnp.pad(g, ((0, 0), (0, pad_len), (0, 0)), constant_values=0.0)
         beta = jnp.pad(beta, ((0, 0), (0, pad_len), (0, 0)))
 
     padded_len = seq_len + pad_len
@@ -512,8 +494,7 @@ def gated_delta_rule_chunk(
     This is a drop-in replacement for gated_delta_rule that uses
     chunkwise parallel computation for improved efficiency.
 
-    Currently uses the simple version that scans over chunks.
-    TODO: Implement full parallel WY-representation version.
+    Uses the full parallel WY-representation version.
 
     Args:
         q: Queries [batch, seq, num_heads, head_k] - should be L2 normalized
@@ -530,8 +511,53 @@ def gated_delta_rule_chunk(
         output: [batch, seq, num_heads, head_v]
         final_state: [batch, num_heads, head_k, head_v] if output_final_state else None
     """
-    # Use simple version for now - it's correct and still faster than naive
-    # TODO: Debug and enable the full parallel version
-    return gated_delta_rule_chunk_simple(
-        q, k, v, g, beta, scale, initial_state, output_final_state, chunk_size
+    batch, seq_len, num_heads, head_k = q.shape
+    head_v = v.shape[-1]
+
+    if scale is None:
+        scale = head_k**-0.5
+
+    # Pad sequence to multiple of chunk_size
+    pad_len = (chunk_size - seq_len % chunk_size) % chunk_size
+    if pad_len > 0:
+        q = jnp.pad(q, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
+        k = jnp.pad(k, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
+        v = jnp.pad(v, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
+        g = jnp.pad(g, ((0, 0), (0, pad_len), (0, 0)), constant_values=0.0)
+        beta = jnp.pad(beta, ((0, 0), (0, pad_len), (0, 0)))
+
+    padded_len = seq_len + pad_len
+    num_chunks = padded_len // chunk_size
+
+    # Reshape to chunks: [batch, num_chunks, chunk_size, ...]
+    q_chunks = rearrange(q, "b (c l) h k -> b c l h k", l=chunk_size)
+    k_chunks = rearrange(k, "b (c l) h k -> b c l h k", l=chunk_size)
+    v_chunks = rearrange(v, "b (c l) h v -> b c l h v", l=chunk_size)
+    g_chunks = rearrange(g, "b (c l) h -> b c l h", l=chunk_size)
+    beta_chunks = rearrange(beta, "b (c l) h -> b c l h", l=chunk_size)
+
+    # Cumulative decay within each chunk
+    g_cumsum = jnp.cumsum(g_chunks, axis=2)
+
+    # WY representation
+    A = compute_A_matrix(k_chunks, beta_chunks, g_cumsum)
+    A_inv = solve_tril(A)
+    w, u = recompute_w_u(k_chunks, v_chunks, beta_chunks, A_inv, g_cumsum)
+
+    # Chunk state propagation and outputs
+    h_begin, v_new, final_state = chunk_fwd_h(
+        k_chunks, w, u, g_cumsum, initial_state
     )
+    outputs = chunk_fwd_o(q_chunks, k_chunks, v_new, h_begin, g_cumsum, scale)
+
+    # Reshape back
+    outputs = rearrange(outputs, "b c l h v -> b (c l) h v")
+
+    # Remove padding
+    if pad_len > 0:
+        outputs = outputs[:, :seq_len, :, :]
+
+    if output_final_state:
+        return outputs, final_state
+    else:
+        return outputs, None
