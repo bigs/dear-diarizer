@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import random
 from pathlib import Path
 
@@ -11,11 +10,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from wavlejepa.model import WavLeJEPA, WavLeJEPAConfig
-from wavlejepa.training.checkpoint import WavLeJEPACheckpointer
-from wavlejepa.training.config import TrainingConfig
+from wavlejepa.model import WavLeJEPA
 
 from .embeddings import load_audio_padded
+from .checkpoint_utils import restore_model
 
 
 def _extract_single_frames(
@@ -30,24 +28,7 @@ def _extract_single_frames(
 
 
 def _load_model(checkpoint_path: Path) -> WavLeJEPA:
-    checkpoint_path = Path(checkpoint_path)
-    training_config_path = checkpoint_path / "training_config.json"
-    model_config_path = checkpoint_path / "model_config.json"
-
-    training_config = TrainingConfig.from_json(training_config_path)
-    with model_config_path.open("r", encoding="utf-8") as f:
-        model_config = WavLeJEPAConfig.from_dict(json.load(f))
-
-    checkpointer = WavLeJEPACheckpointer(
-        config=training_config.checkpoint,
-        training_config=training_config,
-        model_config=model_config,
-    )
-    result = checkpointer.restore_best(key=jax.random.key(0))
-    if result is None:
-        raise ValueError(f"No checkpoint found at {checkpoint_path}")
-    state, _ = result
-    return state.model
+    return restore_model(checkpoint_path, key=jax.random.key(0))
 
 
 def _collect_samples(

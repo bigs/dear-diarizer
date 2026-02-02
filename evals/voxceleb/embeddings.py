@@ -1,6 +1,5 @@
 """Extract embeddings from frozen WavLeJEPA checkpoint."""
 
-import json
 import os
 from pathlib import Path
 
@@ -15,9 +14,9 @@ import librosa
 import numpy as np
 from tqdm import tqdm
 
-from wavlejepa.model import WavLeJEPA, WavLeJEPAConfig
-from wavlejepa.training.checkpoint import WavLeJEPACheckpointer
-from wavlejepa.training.config import TrainingConfig
+from wavlejepa.model import WavLeJEPA
+
+from .checkpoint_utils import restore_model
 
 
 def load_audio_padded(
@@ -156,31 +155,7 @@ def extract_embeddings(
     if feature_source not in {"topk", "context"}:
         raise ValueError(f"Unsupported feature_source: {feature_source}")
 
-    # Load configs
-    training_config_path = checkpoint_path / "training_config.json"
-    model_config_path = checkpoint_path / "model_config.json"
-
-    # Reconstruct configs
-    training_config = TrainingConfig.from_json(training_config_path)
-
-    with open(model_config_path) as f:
-        model_config_dict = json.load(f)
-        model_config = WavLeJEPAConfig.from_dict(model_config_dict)
-
-    # Load checkpoint
-    checkpointer = WavLeJEPACheckpointer(
-        config=training_config.checkpoint,
-        training_config=training_config,
-        model_config=model_config,
-    )
-
-    # Restore best model
-    result = checkpointer.restore_best(key=jax.random.key(0))
-    if result is None:
-        raise ValueError(f"No checkpoint found at {checkpoint_path}")
-
-    state, _ = result
-    model = state.model
+    model = restore_model(checkpoint_path, key=jax.random.key(0))
 
     # Load all audio with fixed length (enables batching)
     print(f"Loading {len(audio_paths)} audio files...")
