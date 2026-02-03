@@ -256,10 +256,10 @@ class CheckpointUploadManager:
         if self._thread is None:
             self._closed = True
             return
+        self._closed = True
         self._queue.join()
         self._queue.put(None)
         self._thread.join()
-        self._closed = True
 
     def _wait_for_checkpoint_dir(
         self,
