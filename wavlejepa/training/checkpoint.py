@@ -10,6 +10,7 @@ Handles the Equinox + Orbax integration:
 from pathlib import Path
 from typing import Optional
 import json
+import logging
 
 import jax
 import jax.numpy as jnp
@@ -21,6 +22,10 @@ from jaxtyping import PRNGKeyArray
 from ..model import WavLeJEPA, WavLeJEPAConfig
 from .state import TrainState, create_optimizer
 from .config import TrainingConfig, CheckpointConfig
+from .checkpoint_upload import CheckpointUploadManager
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class WavLeJEPACheckpointer:
@@ -72,6 +77,10 @@ class WavLeJEPACheckpointer:
 
         # Cache for optimizer (needed for restore)
         self._optimizer: Optional[optax.GradientTransformation] = None
+        self._upload_manager = CheckpointUploadManager.from_env(
+            checkpoint_dir=self.checkpoint_dir,
+            logger=LOGGER,
+        )
 
     def _save_configs(self) -> None:
         """Save configs for reconstruction on restore."""
@@ -159,6 +168,8 @@ class WavLeJEPACheckpointer:
             step,
             args=ocp.args.StandardSave(saveable),
         )
+        if self._upload_manager is not None:
+            self._upload_manager.enqueue_checkpoint(step, is_best=False)
 
     def save_best(self, state: TrainState, val_loss: float) -> TrainState:
         """
@@ -192,6 +203,8 @@ class WavLeJEPACheckpointer:
             int(state.step),
             args=ocp.args.StandardSave(saveable),
         )
+        if self._upload_manager is not None:
+            self._upload_manager.enqueue_checkpoint(int(state.step), is_best=True)
 
         return new_state
 
@@ -293,6 +306,8 @@ class WavLeJEPACheckpointer:
         self.manager.wait_until_finished()
         if self.best_manager:
             self.best_manager.wait_until_finished()
+        if self._upload_manager is not None:
+            self._upload_manager.shutdown()
 
     @property
     def latest_step(self) -> Optional[int]:

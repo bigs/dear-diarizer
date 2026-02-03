@@ -84,7 +84,31 @@ Default checkpoint path is `./checkpoints` (configurable in YAML). Ensure:
 - The directory exists or is creatable.
 - Enough disk space for Orbax checkpoints.
 
-## 7) Environment knobs (optional but common)
+## 7) Checkpoint upload to object storage (optional)
+
+If you want to syndicate checkpoints to an object store (best-effort, does not
+change local checkpointing), set a bucket path and credentials. The uploader
+creates tarballs for each checkpoint and uploads them as they are written.
+
+S3 example:
+
+```bash
+export CHECKPOINT_BUCKET_PATH=s3://my-bucket/wavlejepa/run-001
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+```
+
+GCS example:
+
+```bash
+export CHECKPOINT_BUCKET_PATH=gs://my-bucket/wavlejepa/run-001
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service_account.json
+```
+
+The remote object key is `{prefix}/{tarball_name}` and the file `{prefix}/best`
+contains the current best tarball name.
+
+## 8) Environment knobs (optional but common)
 
 - Control JAX memory preallocation:
 
@@ -92,7 +116,7 @@ Default checkpoint path is `./checkpoints` (configurable in YAML). Ensure:
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.4
 ```
 
-## 8) Example run
+## 9) Example run
 
 ```bash
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.4 uv run python -m wavlejepa.train \
@@ -100,7 +124,7 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.4 uv run python -m wavlejepa.train \
   --shards "shards/train-{000000..000099}.tar"
 ```
 
-## 9) Preprocessing (optional)
+## 10) Preprocessing (optional)
 
 If you want to pre-decode audio into tensor shards (faster training):
 
