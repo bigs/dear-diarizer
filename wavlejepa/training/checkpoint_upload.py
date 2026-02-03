@@ -250,13 +250,6 @@ class CheckpointUploadManager:
         else:
             self._queue.put(task)
 
-    def wait_until_finished(self) -> None:
-        if self._closed:
-            return
-        if self._thread is None:
-            return
-        self._queue.join()
-
     def shutdown(self) -> None:
         if self._closed:
             return
@@ -289,6 +282,9 @@ class CheckpointUploadManager:
                 else:
                     stable_count = 0
                     last_snapshot = snapshot
+            else:
+                stable_count = 0
+                last_snapshot = None
 
             if time.time() - start > timeout_s:
                 self._logger.warning(
