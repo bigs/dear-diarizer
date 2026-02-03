@@ -63,9 +63,9 @@ def _dir_snapshot(path: Path) -> tuple[int, int]:
 
 
 def build_checkpoint_tarball(
-    checkpoint_dir: Path,
-    checkpoint_subdir: Path,
-    tarball_path: Path,
+    checkpoint_dir: Path | str,
+    checkpoint_subdir: Path | str,
+    tarball_path: Path | str,
 ) -> None:
     """Create a tar.gz containing configs and the checkpoint subdir."""
     checkpoint_dir = Path(checkpoint_dir)
@@ -151,7 +151,7 @@ class CheckpointUploadManager:
 
     def __init__(
         self,
-        checkpoint_dir: Path,
+        checkpoint_dir: Path | str,
         scheme: str,
         bucket: str,
         prefix: str,
@@ -180,7 +180,7 @@ class CheckpointUploadManager:
     @classmethod
     def from_env(
         cls,
-        checkpoint_dir: Path,
+        checkpoint_dir: Path | str,
         logger: Optional[logging.Logger] = None,
     ) -> Optional["CheckpointUploadManager"]:
         bucket_uri = os.getenv("CHECKPOINT_BUCKET_PATH")
