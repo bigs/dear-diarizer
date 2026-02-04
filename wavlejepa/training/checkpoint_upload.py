@@ -85,6 +85,177 @@ def build_checkpoint_tarball(
             tar.add(checkpoint_subdir, arcname=str(rel_subdir))
 
 
+def checkpoint_tarball_name(
+    checkpoint_dir: Path | str, *, step: int, is_best: bool
+) -> str:
+    """Build a checkpoint tarball name matching the training uploader format."""
+    checkpoint_dir = Path(checkpoint_dir)
+    kind = "best" if is_best else "checkpoint"
+    return f"{checkpoint_dir.name}-{kind}-step-{step:08d}.tar.gz"
+
+
+def _object_key(prefix: str, name: str) -> str:
+    if prefix:
+        return f"{prefix}/{name}"
+    return name
+
+
+def resolve_checkpoint_ref(
+    checkpoint_path: Path | str,
+    *,
+    step: int | None = None,
+    is_best: bool | None = None,
+    latest: bool = False,
+) -> tuple[Path, int, bool]:
+    """
+    Resolve a user-provided checkpoint path to (checkpoint_dir, step, is_best).
+
+    Accepted paths:
+    - /path/to/run/checkpoints/<step>
+    - /path/to/run/best/<step>
+    - /path/to/run/checkpoints or /path/to/run/best (requires --step or --latest)
+    - /path/to/run (requires --step or --latest)
+    """
+    path = Path(checkpoint_path).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint path does not exist: {path}")
+    if path.is_file():
+        raise ValueError(f"Checkpoint path must be a directory, got file: {path}")
+
+    if path.name.isdigit() and path.parent.name in {"checkpoints", "best"}:
+        inferred_step = int(path.name)
+        inferred_best = path.parent.name == "best"
+        if step is not None and step != inferred_step:
+            raise ValueError(
+                f"Conflicting step: inferred {inferred_step} from {path}, got {step}."
+            )
+        if is_best is not None and is_best != inferred_best:
+            raise ValueError(
+                f"Conflicting --best: inferred {inferred_best} from {path}."
+            )
+        return path.parent.parent, inferred_step, inferred_best
+
+    looks_like_run_root = (path / "training_config.json").exists() or (
+        path / "model_config.json"
+    ).exists()
+
+    def choose_step(subdir: Path) -> int:
+        if step is not None:
+            step_dir = subdir / str(step)
+            if not step_dir.is_dir():
+                raise FileNotFoundError(
+                    f"Checkpoint step directory not found: {step_dir}"
+                )
+            return step
+        if not latest:
+            raise ValueError(
+                f"Checkpoint step not specified for {path}. Provide --step or --latest."
+            )
+        candidates = [
+            int(p.name) for p in subdir.iterdir() if p.is_dir() and p.name.isdigit()
+        ]
+        if not candidates:
+            raise FileNotFoundError(f"No checkpoint steps found under {subdir}")
+        return max(candidates)
+
+    if path.name in {"checkpoints", "best"} and not looks_like_run_root:
+        checkpoint_dir = path.parent
+        inferred_best = path.name == "best"
+        if is_best is not None and is_best != inferred_best:
+            raise ValueError(
+                f"Conflicting --best: inferred {inferred_best} from {path}."
+            )
+        chosen_step = choose_step(path)
+        return checkpoint_dir, chosen_step, inferred_best
+
+    checkpoint_dir = path
+    chosen_best = bool(is_best) if is_best is not None else False
+    subdir = checkpoint_dir / ("best" if chosen_best else "checkpoints")
+    if not subdir.exists():
+        if (
+            is_best is None
+            and (checkpoint_dir / "best").exists()
+            and not (checkpoint_dir / "checkpoints").exists()
+        ):
+            chosen_best = True
+            subdir = checkpoint_dir / "best"
+        else:
+            raise FileNotFoundError(f"Missing checkpoint subdir: {subdir}")
+
+    chosen_step = choose_step(subdir)
+    return checkpoint_dir, chosen_step, chosen_best
+
+
+def upload_checkpoint_tarball(
+    checkpoint_path: Path | str,
+    *,
+    bucket_uri: str,
+    step: int | None = None,
+    is_best: bool | None = None,
+    latest: bool = False,
+    wait_for_stable: bool = True,
+    timeout_s: float = 300.0,
+    uploader: Optional["BaseUploader"] = None,
+    logger: Optional[logging.Logger] = None,
+) -> str:
+    """
+    Build and upload a checkpoint tarball matching the training uploader format.
+
+    Returns the tarball name that was uploaded.
+    """
+    log = logger or LOGGER
+    checkpoint_dir, resolved_step, resolved_best = resolve_checkpoint_ref(
+        checkpoint_path, step=step, is_best=is_best, latest=latest
+    )
+    checkpoint_subdir = (
+        checkpoint_dir
+        / ("best" if resolved_best else "checkpoints")
+        / str(resolved_step)
+    )
+    tarball_name = checkpoint_tarball_name(
+        checkpoint_dir, step=resolved_step, is_best=resolved_best
+    )
+
+    training_config = checkpoint_dir / "training_config.json"
+    model_config = checkpoint_dir / "model_config.json"
+    if not training_config.exists() or not model_config.exists():
+        log.warning(
+            "Missing config JSONs in %s (training_config.json=%s, model_config.json=%s).",
+            checkpoint_dir,
+            training_config.exists(),
+            model_config.exists(),
+        )
+
+    scheme, bucket, prefix = parse_bucket_uri(bucket_uri)
+    upload_impl = uploader or _create_uploader(scheme, bucket)
+
+    if wait_for_stable:
+        manager = CheckpointUploadManager(
+            checkpoint_dir=checkpoint_dir,
+            scheme=scheme,
+            bucket=bucket,
+            prefix=prefix,
+            uploader=upload_impl,
+            logger=log,
+            start_worker=False,
+        )
+        manager._wait_for_checkpoint_dir(checkpoint_subdir, timeout_s=timeout_s)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tarball_path = Path(tmpdir) / tarball_name
+        build_checkpoint_tarball(
+            checkpoint_dir=checkpoint_dir,
+            checkpoint_subdir=checkpoint_subdir,
+            tarball_path=tarball_path,
+        )
+        object_key = _object_key(prefix, tarball_name)
+        upload_impl.upload_file(tarball_path, object_key)
+        if resolved_best:
+            upload_impl.upload_text(_object_key(prefix, "best"), f"{tarball_name}\n")
+
+    return tarball_name
+
+
 class BaseUploader:
     """Uploader interface for bucket providers."""
 
@@ -218,17 +389,13 @@ class CheckpointUploadManager:
             return None
 
     def _object_key(self, name: str) -> str:
-        if self.prefix:
-            return f"{self.prefix}/{name}"
-        return name
+        return _object_key(self.prefix, name)
 
     def _best_pointer_key(self) -> str:
         return self._object_key("best")
 
     def _tarball_name(self, step: int, is_best: bool) -> str:
-        base = self.checkpoint_dir.name
-        kind = "best" if is_best else "checkpoint"
-        return f"{base}-{kind}-step-{step:08d}.tar.gz"
+        return checkpoint_tarball_name(self.checkpoint_dir, step=step, is_best=is_best)
 
     def _make_task(self, step: int, is_best: bool) -> CheckpointUploadTask:
         subdir = "best" if is_best else "checkpoints"
