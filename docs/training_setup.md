@@ -108,6 +108,20 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service_account.json
 The remote object key is `{prefix}/{tarball_name}` and the file `{prefix}/best`
 contains the current best tarball name.
 
+### Manual upload (one-off)
+
+If you have a local checkpoint you want to upload after the fact, you can run:
+
+```bash
+uv run python -m wavlejepa.upload_checkpoint /path/to/run/checkpoints/123
+```
+
+You can also point at the run root and select a step:
+
+```bash
+uv run python -m wavlejepa.upload_checkpoint /path/to/run --step 123
+```
+
 ## 8) Environment knobs (optional but common)
 
 - Control JAX memory preallocation:

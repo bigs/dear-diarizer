@@ -1,5 +1,6 @@
 """Tests for checkpoint upload utilities."""
 
+import io
 from pathlib import Path
 import tarfile
 
@@ -9,7 +10,10 @@ from wavlejepa.training.checkpoint_upload import (
     BaseUploader,
     CheckpointUploadManager,
     build_checkpoint_tarball,
+    checkpoint_tarball_name,
     parse_bucket_uri,
+    resolve_checkpoint_ref,
+    upload_checkpoint_tarball,
 )
 
 
@@ -86,6 +90,81 @@ def test_best_pointer_payload(tmp_path: Path) -> None:
     manager._handle_task(task)
 
     assert uploader.texts["runs/1/best"] == f"{task.tarball_name}\n"
+
+
+def test_resolve_checkpoint_ref_step_dir(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    step_dir = run_dir / "checkpoints" / "5"
+    step_dir.mkdir(parents=True)
+
+    checkpoint_dir, step, is_best = resolve_checkpoint_ref(step_dir)
+    assert checkpoint_dir == run_dir
+    assert step == 5
+    assert is_best is False
+
+
+def test_resolve_checkpoint_ref_latest(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "checkpoints" / "5").mkdir(parents=True)
+    (run_dir / "checkpoints" / "12").mkdir(parents=True)
+
+    checkpoint_dir, step, is_best = resolve_checkpoint_ref(
+        run_dir / "checkpoints", latest=True
+    )
+    assert checkpoint_dir == run_dir
+    assert step == 12
+    assert is_best is False
+
+
+def test_upload_checkpoint_tarball_checkpoint(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "run"
+    step_dir = checkpoint_dir / "checkpoints" / "5"
+    step_dir.mkdir(parents=True)
+    (checkpoint_dir / "training_config.json").write_text("{}")
+    (checkpoint_dir / "model_config.json").write_text("{}")
+    (step_dir / "dummy.bin").write_text("data")
+
+    uploader = FakeUploader()
+    tarball_name = upload_checkpoint_tarball(
+        step_dir,
+        bucket_uri="s3://bucket/runs/1",
+        uploader=uploader,
+        wait_for_stable=False,
+    )
+
+    expected_name = checkpoint_tarball_name(checkpoint_dir, step=5, is_best=False)
+    assert tarball_name == expected_name
+
+    key = f"runs/1/{tarball_name}"
+    assert key in uploader.files
+    assert "runs/1/best" not in uploader.texts
+
+    with tarfile.open(fileobj=io.BytesIO(uploader.files[key]), mode="r:gz") as tar:
+        names = set(tar.getnames())
+    assert "training_config.json" in names
+    assert "model_config.json" in names
+    assert "checkpoints/5/dummy.bin" in names
+
+
+def test_upload_checkpoint_tarball_best_pointer(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "run"
+    step_dir = checkpoint_dir / "best" / "7"
+    step_dir.mkdir(parents=True)
+    (checkpoint_dir / "training_config.json").write_text("{}")
+    (checkpoint_dir / "model_config.json").write_text("{}")
+    (step_dir / "dummy.bin").write_text("data")
+
+    uploader = FakeUploader()
+    tarball_name = upload_checkpoint_tarball(
+        step_dir,
+        bucket_uri="s3://bucket/runs/1",
+        uploader=uploader,
+        wait_for_stable=False,
+    )
+
+    expected_name = checkpoint_tarball_name(checkpoint_dir, step=7, is_best=True)
+    assert tarball_name == expected_name
+    assert uploader.texts["runs/1/best"] == f"{tarball_name}\n"
 
 
 def test_env_gating(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
