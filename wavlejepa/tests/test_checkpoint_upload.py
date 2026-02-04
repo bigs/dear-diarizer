@@ -116,6 +116,18 @@ def test_resolve_checkpoint_ref_latest(tmp_path: Path) -> None:
     assert is_best is False
 
 
+def test_resolve_checkpoint_ref_run_dir_named_best(tmp_path: Path) -> None:
+    run_dir = tmp_path / "best"
+    (run_dir / "checkpoints" / "5").mkdir(parents=True)
+    (run_dir / "training_config.json").write_text("{}")
+    (run_dir / "model_config.json").write_text("{}")
+
+    checkpoint_dir, step, is_best = resolve_checkpoint_ref(run_dir, step=5)
+    assert checkpoint_dir == run_dir
+    assert step == 5
+    assert is_best is False
+
+
 def test_upload_checkpoint_tarball_checkpoint(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "run"
     step_dir = checkpoint_dir / "checkpoints" / "5"

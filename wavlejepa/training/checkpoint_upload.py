@@ -135,6 +135,10 @@ def resolve_checkpoint_ref(
             )
         return path.parent.parent, inferred_step, inferred_best
 
+    looks_like_run_root = (path / "training_config.json").exists() or (
+        path / "model_config.json"
+    ).exists()
+
     def choose_step(subdir: Path) -> int:
         if step is not None:
             step_dir = subdir / str(step)
@@ -154,7 +158,7 @@ def resolve_checkpoint_ref(
             raise FileNotFoundError(f"No checkpoint steps found under {subdir}")
         return max(candidates)
 
-    if path.name in {"checkpoints", "best"}:
+    if path.name in {"checkpoints", "best"} and not looks_like_run_root:
         checkpoint_dir = path.parent
         inferred_best = path.name == "best"
         if is_best is not None and is_best != inferred_best:
