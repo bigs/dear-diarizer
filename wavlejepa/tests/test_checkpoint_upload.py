@@ -251,7 +251,12 @@ manager.enqueue_checkpoint(1, is_best=False)
 # Intentionally exit without calling manager.shutdown().
 """
     repo_root = Path(__file__).resolve().parents[2]
-    subprocess.run([sys.executable, "-c", script], check=True, cwd=repo_root)
+    subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        cwd=repo_root,
+        timeout=60,
+    )
 
     assert marker_path.exists()
     assert marker_path.read_text() == "runs/1/ckpt-root-checkpoint-step-00000001.tar.gz"
