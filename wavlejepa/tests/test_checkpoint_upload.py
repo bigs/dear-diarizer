@@ -251,7 +251,7 @@ manager.enqueue_checkpoint(1, is_best=False)
 # Intentionally exit without calling manager.shutdown().
 """
     repo_root = Path(__file__).resolve().parents[2]
-    subprocess.run(
+    subprocess.run(  # noqa: S603 - test-controlled inline script
         [sys.executable, "-c", script],
         check=True,
         cwd=repo_root,
