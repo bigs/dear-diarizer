@@ -146,6 +146,23 @@ def test_upload_checkpoint_tarball_checkpoint(tmp_path: Path) -> None:
     assert "checkpoints/5/dummy.bin" in names
 
 
+def test_upload_checkpoint_tarball_missing_step_raises(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "run"
+    (checkpoint_dir / "checkpoints").mkdir(parents=True)
+    (checkpoint_dir / "training_config.json").write_text("{}")
+    (checkpoint_dir / "model_config.json").write_text("{}")
+
+    uploader = FakeUploader()
+    with pytest.raises(FileNotFoundError, match="Checkpoint step directory not found"):
+        upload_checkpoint_tarball(
+            checkpoint_dir,
+            bucket_uri="s3://bucket/runs/1",
+            step=999,
+            uploader=uploader,
+            wait_for_stable=False,
+        )
+
+
 def test_upload_checkpoint_tarball_best_pointer(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "run"
     step_dir = checkpoint_dir / "best" / "7"

@@ -137,6 +137,11 @@ def resolve_checkpoint_ref(
 
     def choose_step(subdir: Path) -> int:
         if step is not None:
+            step_dir = subdir / str(step)
+            if not step_dir.is_dir():
+                raise FileNotFoundError(
+                    f"Checkpoint step directory not found: {step_dir}"
+                )
             return step
         if not latest:
             raise ValueError(
