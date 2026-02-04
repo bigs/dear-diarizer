@@ -2,6 +2,8 @@
 
 import io
 from pathlib import Path
+import subprocess
+import sys
 import tarfile
 
 import pytest
@@ -204,3 +206,52 @@ def test_env_gating(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
     assert CheckpointUploadManager.from_env(tmp_path) is None
+
+
+def test_pending_uploads_flushed_on_process_exit(tmp_path: Path) -> None:
+    """Ensure daemon worker doesn't drop final task at interpreter exit."""
+    checkpoint_dir = tmp_path / "ckpt-root"
+    step_dir = checkpoint_dir / "checkpoints" / "1"
+    step_dir.mkdir(parents=True)
+    (checkpoint_dir / "training_config.json").write_text("{}")
+    (checkpoint_dir / "model_config.json").write_text("{}")
+    (step_dir / "dummy.bin").write_text("data")
+
+    marker_path = tmp_path / "uploaded.txt"
+
+    script = f"""
+import time
+from pathlib import Path
+
+from wavlejepa.training.checkpoint_upload import BaseUploader, CheckpointUploadManager
+
+checkpoint_dir = Path({str(checkpoint_dir)!r})
+marker_path = Path({str(marker_path)!r})
+
+class SlowUploader(BaseUploader):
+    def upload_file(self, local_path: Path, key: str) -> None:
+        time.sleep(1.0)
+        marker_path.write_text(key)
+
+    def upload_text(self, key: str, text: str) -> None:
+        return
+
+class FastManager(CheckpointUploadManager):
+    def _wait_for_checkpoint_dir(self, path: Path, **kwargs) -> None:
+        return
+
+manager = FastManager(
+    checkpoint_dir=checkpoint_dir,
+    scheme="s3",
+    bucket="bucket",
+    prefix="runs/1",
+    uploader=SlowUploader(),
+)
+manager.enqueue_checkpoint(1, is_best=False)
+# Intentionally exit without calling manager.shutdown().
+"""
+    repo_root = Path(__file__).resolve().parents[2]
+    subprocess.run([sys.executable, "-c", script], check=True, cwd=repo_root)
+
+    assert marker_path.exists()
+    assert marker_path.read_text() == "runs/1/ckpt-root-checkpoint-step-00000001.tar.gz"
