@@ -7,6 +7,7 @@ directories and uploads them to a bucket when configured via env vars.
 
 from __future__ import annotations
 
+import atexit
 from dataclasses import dataclass
 import logging
 import os
@@ -18,6 +19,7 @@ import threading
 import time
 from typing import Optional
 from urllib.parse import urlparse
+import weakref
 
 
 LOGGER = logging.getLogger(__name__)
@@ -347,6 +349,22 @@ class CheckpointUploadManager:
                 daemon=True,
             )
             self._thread.start()
+            self._register_atexit_shutdown()
+
+    def _register_atexit_shutdown(self) -> None:
+        manager_ref = weakref.ref(self)
+
+        def _shutdown() -> None:
+            manager = manager_ref()
+            if manager is None:
+                return
+            try:
+                manager.shutdown()
+            except Exception:  # noqa: BLE001
+                # Never raise during interpreter shutdown.
+                return
+
+        atexit.register(_shutdown)
 
     @classmethod
     def from_env(
