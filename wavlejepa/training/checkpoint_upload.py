@@ -360,7 +360,7 @@ class CheckpointUploadManager:
                 return
             try:
                 manager.shutdown()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 # Never raise during interpreter shutdown.
                 return
 
