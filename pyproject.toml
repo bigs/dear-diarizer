@@ -34,6 +34,9 @@ cuda = [
 tpu = [
     "jax[tpu]>=0.8.2",
 ]
+hear = [
+    "torch>=2.0.0",
+]
 
 [tool.ruff.lint]
 ignore = [
